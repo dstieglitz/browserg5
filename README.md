@@ -63,13 +63,15 @@ heading (or, while editing Altitude, syncs selected altitude). Menus and dialogs
 Three sources feed `g5Input`:
 
 - **IFR-1 hardware** (production) — the panel's mode selector reserves **FMS2 as
-  "G5 mode"**: there, the outer ring drives PFD turn, inner ring HSI turn, MENU =
-  PFD press, CRSR = HSI press (held ≥3 s = hold). Other modes drive the aircraft
-  via the `.mcc`. Run with `--ifr1`; see **[`README_IFR1.md`](README_IFR1.md)**.
+  "G5 mode"**: there, the **inner ring + CRSR drive the focused unit** and **SWAP
+  switches focus** (a cyan border marks the selected unit); hold CRSR ≥3 s = hold.
+  Other modes drive the aircraft via the `.mcc`. Run with `--ifr1`; see
+  **[`README_IFR1.md`](README_IFR1.md)**.
 - **Mouse** (desktop testing) — wheel = turn, click = press, hold ≥3 s = hold,
   routed to the unit under the cursor (which gets a faint outline). **Touch taps
   never operate the avionics** — on a phone a tap opens the display-fit menu.
-- **Keyboard** (desktop testing) — Arrow ↑/↓ = turn, Enter = press / hold.
+- **Keyboard** (desktop testing) — Arrow ↑/↓ = turn, Enter = press / hold,
+  **S = switch focus**.
 
 Knob-set values (baro / heading bug / selected altitude / course) are **written
 back to X-Plane** so the sim follows the simulated knob (POST `/write` →

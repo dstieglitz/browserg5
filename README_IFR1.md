@@ -89,45 +89,46 @@ Change the reserved mode with `G5_MODE` in `server.py`.
 
 ## Control mapping in G5 mode (FMS2)
 
-Two stacked G5 units: `TOP_G5` = PFD, `BOTTOM_G5` = HSI. In FMS2 the whole panel is
-free, so:
+Two stacked G5 units: `TOP_G5` = PFD, `BOTTOM_G5` = HSI. The **inner ring + CRSR
+drive whichever unit is *focused***; **SWAP** switches the focus. A thin cyan
+border marks the focused unit on screen.
 
-| IFR-1 control | G5 action | Set in `server.py` |
+| IFR-1 control | G5 action | In `server.py` |
 |---|---|---|
-| **Outer ring** turn | `TOP_G5` (PFD) turn cw/ccw | `G5_ENC_UNIT["outer"]` |
-| **Inner ring** turn | `BOTTOM_G5` (HSI) turn cw/ccw | `G5_ENC_UNIT["inner"]` |
-| **MENU** button (tap) | `TOP_G5` (PFD) press | `G5_BTN_UNIT["MENU"]` |
-| **CRSR** (inner push, tap) | `BOTTOM_G5` (HSI) press | `G5_BTN_UNIT["CRSR"]` |
-| **CRSR/MENU held ≥3 s** | that unit's **hold** (press-and-hold sync) | `HOLD_SEC`, `_g5_tick()` |
+| **Inner ring** turn | turn the **focused** unit (cw/ccw) | `_route_g5` → `"FOCUS"` |
+| **CRSR** (inner push, tap) | press the **focused** unit | `_g5_held["CRSR"]` |
+| **CRSR** held ≥3 s | focused unit **hold** (sync) | `HOLD_SEC`, `_g5_tick()` |
+| **SWAP** button | **switch** the focused unit | `G5_SWITCH_BTN` |
+| Outer ring / MENU | (unused in G5 mode) | — |
 
-Each event becomes a canonical `g5Input(unit, action)` call in the browser. A G5
-"press" opens/advances that unit's menu; "turn" adjusts baro (PFD) / heading bug
-(HSI), moves the menu cursor, or changes the value being edited; **"hold"** (the
-HSI knob held ≥3 s) syncs the heading bug to current heading (or selected altitude
-while editing it). Buttons defer: a quick press fires on release, a long hold
-fires `hold` and suppresses the press — exactly as the mouse/keyboard test inputs do.
+The browser resolves the `"FOCUS"` sentinel to the selected unit (`focusIdx`), and
+`"switch"` toggles it. Each event becomes a canonical `g5Input(unit, action)` call:
+"press" opens/advances the focused unit's menu; "turn" adjusts its baro (PFD) /
+heading bug (HSI), moves the menu cursor, or edits a value; **"hold"** syncs the
+heading bug to current heading (or selected altitude while editing it). Buttons
+defer: a quick press fires on release, a long hold fires `hold` and suppresses the
+press — exactly as the mouse/keyboard test inputs do.
 
-> In single-unit views (`?mode=pfd` / `?mode=hsi`) the missing unit's events are
-> harmless no-ops, so the outer ring + MENU drive the one shown unit.
+> Single-unit views (`?mode=pfd` / `?mode=hsi`) have nothing to switch — the inner
+> ring + CRSR just drive the one unit, and no focus border is shown.
 
 ### Operating the G5 from the panel
 
-Each unit is driven by its own half of the knob — **PFD = outer ring + MENU**,
-**HSI = inner ring + CRSR**:
+It's all the **inner knob + SWAP**; the cyan border shows which unit you're on:
 
-- **Adjust the bug/setting** (menu closed): turn the ring — outer = PFD baro,
-  inner = HSI heading bug.
-- **Open a unit's menu:** tap its button — **MENU** for the PFD, **CRSR** for the
-  HSI. (Tap, don't hold; a quick press registers on release.)
-- **Navigate the menu:** turn that unit's ring to move the cursor; **tap the same
-  button** to select the highlighted item.
-- **Switch a unit's page (PFD ↔ HSI):** there is **no dedicated switch button** —
-  open the menu, turn to the **`PFD`** (or **`HSI`**) item, and select it. e.g. to
-  make the HSI unit show the PFD: CRSR → inner ring to `PFD` → CRSR.
-- **Sync heading bug → current heading:** hold **CRSR ≥3 s** (HSI). While editing
-  Altitude, the hold syncs selected altitude instead.
+- **Select a unit:** tap **SWAP** to move the focus border between PFD and HSI.
+- **Adjust the bug/setting** (menu closed): turn the **inner ring** — PFD baro or
+  HSI heading bug, whichever is focused.
+- **Open the menu:** tap **CRSR**. **Navigate:** turn the inner ring. **Select:**
+  tap CRSR again. (Tap, don't hold; a quick press registers on release.)
+- **Switch a unit's page (PFD ↔ HSI):** no dedicated button — open the menu, turn
+  to the **`PFD`** (or **`HSI`**) item, and select it.
+- **Sync heading bug → current heading:** focus the HSI, then hold **CRSR ≥3 s**.
+  While editing Altitude, the hold syncs selected altitude instead.
 
 All of this only applies in **FMS2** (G5 mode); other modes fly the aircraft.
+(Desktop testing: **S** = switch focus, mouse/keyboard otherwise act on the
+hovered unit.)
 
 ### Event path (inbound)
 

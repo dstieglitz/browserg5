@@ -88,8 +88,10 @@ WRITABLE = {"baro", "hdgbug", "altsel", "crs"}
 # drive the G5 units instead of the aircraft. Decoded events are queued here and
 # folded into the SSE stream as `_inputs` for the browser's dispatchBridgeInputs.
 G5_MODE = "FMS2"
-G5_ENC_UNIT = {"outer": "TOP_G5", "inner": "BOTTOM_G5"}   # outer ring=PFD, inner=HSI
-G5_BTN_UNIT = {"MENU": "TOP_G5", "CRSR": "BOTTOM_G5"}      # MENU=PFD press, CRSR=HSI press
+# In G5 mode the inner ring + CRSR drive the FOCUSED unit; SWAP toggles focus.
+# The browser resolves the "FOCUS" sentinel to whichever unit is selected.
+G5_FOCUS = "FOCUS"
+G5_SWITCH_BTN = "SWAP"
 _g5_lock = threading.Lock()
 _g5_inputs: list[dict] = []
 
@@ -125,23 +127,23 @@ _g5_held: dict = {}   # button -> [unit, press_monotonic, hold_fired]
 
 
 def _route_g5(ev) -> None:
-    """Translate an IFR-1 decoder event into a G5 knob action (duck-typed).
-    Buttons defer: a quick press fires on RELEASE; a ≥3 s hold fires `hold`
-    (see _g5_tick) and suppresses the press."""
-    if hasattr(ev, "ring"):                        # EncoderEvent
-        unit = G5_ENC_UNIT.get(ev.ring)
-        if unit:
-            _push_g5_input(unit, "cw" if ev.direction > 0 else "ccw")
+    """Translate an IFR-1 decoder event into a G5 knob action for the FOCUSED unit.
+    Inner ring = turn, CRSR = press/hold (deferred: quick press fires on RELEASE,
+    a ≥3 s hold fires `hold` via _g5_tick), SWAP = switch focus."""
+    if hasattr(ev, "ring"):                        # EncoderEvent — inner ring only
+        if ev.ring == "inner":
+            _push_g5_input(G5_FOCUS, "cw" if ev.direction > 0 else "ccw")
     elif hasattr(ev, "button"):                    # ButtonEvent
-        unit = G5_BTN_UNIT.get(ev.button)
-        if not unit:
-            return
-        if ev.edge == "press":
-            _g5_held[ev.button] = [unit, time.monotonic(), False]
-        elif ev.edge == "release":
-            st = _g5_held.pop(ev.button, None)
-            if st and not st[2]:                   # released before the hold threshold
-                _push_g5_input(unit, "press")
+        if ev.button == G5_SWITCH_BTN:             # SWAP = select the other unit
+            if ev.edge == "press":
+                _push_g5_input(G5_FOCUS, "switch")
+        elif ev.button == "CRSR":                  # inner push = press/hold focused unit
+            if ev.edge == "press":
+                _g5_held["CRSR"] = [G5_FOCUS, time.monotonic(), False]
+            elif ev.edge == "release":
+                st = _g5_held.pop("CRSR", None)
+                if st and not st[2]:               # released before the hold threshold
+                    _push_g5_input(G5_FOCUS, "press")
 
 
 def _g5_tick() -> None:

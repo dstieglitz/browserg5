@@ -1208,6 +1208,7 @@ function frame(now) {
     drawUnitMenu(units[i], r);
     drawEditDialog(units[i], r);
   }
+  drawFocus();
   if (units.length === 2 && hoverIdx >= 0) drawHover(unitRegion(hoverIdx));
   if (dbgOn) updateDbg();
   requestAnimationFrame(frame);
@@ -1246,6 +1247,7 @@ function buildUnits() {
 }
 buildUnits();
 let hoverIdx = -1;                                       // unit under cursor (testing aid)
+let focusIdx = 0;                                        // IFR-1 focus: which unit inner ring/CRSR drive
 
 function unitRegion(i) {
   if (units.length === 1) return { x: VX, y: VY, w: VW, h: VH };
@@ -1327,8 +1329,11 @@ function knobPress(u) {
 
 // Canonical input API — call this from any source (bridge or mouse).
 // unit: a unit id ("TOP_G5"/"BOTTOM_G5") or a numeric index.
+// "switch" toggles which unit the IFR-1 focus drives; unit "FOCUS" resolves to it.
 function g5Input(unit, action) {
-  const u = typeof unit === "number" ? units[unit] : unitById[unit];
+  if (action === "switch") { if (units.length > 1) focusIdx = (focusIdx + 1) % units.length; return; }
+  const u = unit === "FOCUS" ? units[focusIdx]
+          : typeof unit === "number" ? units[unit] : unitById[unit];
   if (!u) return;
   u.ui.lastInput = performance.now();   // reset the menu/dialog auto-close timer
   if (action === "press") knobPress(u);
@@ -1399,6 +1404,7 @@ addEventListener("keydown", (e) => {
   }
   else if (e.key === "ArrowUp")   { e.preventDefault(); g5Input(i, "cw");  }
   else if (e.key === "ArrowDown") { e.preventDefault(); g5Input(i, "ccw"); }
+  else if (e.key === "s" || e.key === "S") { e.preventDefault(); g5Input(null, "switch"); }  // test: SWAP/switch focus
 });
 addEventListener("keyup", (e) => {
   if (e.key !== "Enter") return;
@@ -1515,6 +1521,17 @@ function drawEditDialog(u, reg) {
 function drawHover(reg) {
   ctx.strokeStyle = "rgba(25,211,255,0.45)"; ctx.lineWidth = 2;
   ctx.strokeRect(reg.x + 1, reg.y + 1, reg.w - 2, reg.h - 2);
+}
+
+// Persistent focus indicator: a thin cyan border on the unit the IFR-1 drives.
+// Hugs the very edge (in the margin) so it never overlaps an instrument reading.
+function drawFocus() {
+  if (units.length < 2) return;        // nothing to disambiguate with one unit
+  const r = unitRegion(focusIdx);
+  ctx.save();
+  ctx.strokeStyle = "rgba(25,211,255,0.6)"; ctx.lineWidth = 2;
+  rrect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3, 5); ctx.stroke();
+  ctx.restore();
 }
 
 // ---- developer style panel (press D to toggle, or open with ?dev) ---------
