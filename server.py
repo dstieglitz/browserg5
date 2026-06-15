@@ -51,8 +51,9 @@ DATAREFS: dict[str, str] = {
     "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots
     "vshow":   "sim/cockpit2/radios/indicators/hsi_flag_glideslope_pilot",  # 1 = vertical guidance valid
     # per-source variants — consumed and dropped in snapshot() (underscore keys)
-    "_crs_nav1": "sim/cockpit/radios/nav1_obs_degm",
-    "_crs_nav2": "sim/cockpit/radios/nav2_obs_degm",
+    # pilot-side selected course (OBS for VORs / localizer heading for ILS)
+    "_crs_nav1": "sim/cockpit2/radios/actuators/nav1_course_deg_mag_pilot",
+    "_crs_nav2": "sim/cockpit2/radios/actuators/nav2_course_deg_mag_pilot",
     "_crs_gps":  "sim/cockpit/radios/gps_course_degtm",
     "_cdi_nav1": "sim/cockpit2/radios/indicators/nav1_hdef_dots_pilot",
     "_cdi_nav2": "sim/cockpit2/radios/indicators/nav2_hdef_dots_pilot",
@@ -104,6 +105,18 @@ def _drain_g5_inputs() -> list[dict]:
         out = _g5_inputs[:]
         _g5_inputs.clear()
         return out
+
+
+def _write_dataref(key: str, xp) -> str | None:
+    """Resolve a writable G5 knob key to its X-Plane dataref. `crs` is special:
+    its READ dataref (nav*_course_deg_mag, the displayed course) is read-only —
+    writing the course goes to the OBS setpoint of the SELECTED source instead."""
+    if key == "crs":
+        src = round(xp.value(DATAREFS["navsrc"]))
+        return ("sim/cockpit/radios/gps_course_degtm" if src >= 2
+                else "sim/cockpit/radios/nav2_obs_degm" if src == 1
+                else "sim/cockpit/radios/nav1_obs_degm")
+    return DATAREFS.get(key)
 
 
 def _route_g5(ev) -> None:
@@ -280,9 +293,12 @@ def make_handler(xp: XPlaneClient, rate_hz: float):
                 data = {}
             if xp is not None:
                 for k, v in data.items():
-                    if k in WRITABLE and k in DATAREFS:
+                    if k not in WRITABLE:
+                        continue
+                    path = _write_dataref(k, xp)
+                    if path:
                         try:
-                            xp.set_dataref(DATAREFS[k], float(v))
+                            xp.set_dataref(path, float(v))
                         except (ValueError, TypeError):
                             pass
             self._send_headers("text/plain; charset=utf-8", 0)
