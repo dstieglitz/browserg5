@@ -109,6 +109,10 @@ def _demo_loop():
             "msg": 1.0 if (int(t / 7) % 2 == 0) else 0.0,      # MSG flag blink
             "obs": 1.0 if (int(t / 9) % 2 == 0) else 0.0,      # OBS on/off
             "gpss": 1.0 if (int(t / 11) % 2 == 0) else 0.0,    # GPSS on/off
+            # battery indicator (G5 backup battery not in X-Plane -> demo only)
+            "batt": 50.0 + 48.0 * math.sin(t * 0.05),          # sweep 2%..98% (green/yellow/red)
+            "battchg": 1.0 if (int(t / 13) % 2 == 0) else 0.0, # charging bolt toggle
+            "battshow": 1.0,
         }
         _last_rx = time.monotonic()
         time.sleep(0.03)

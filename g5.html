@@ -42,7 +42,7 @@
 const FONT = "-apple-system, SF Pro Display, system-ui, Roboto, sans-serif";
 
 // ---- live state (target = from sim, disp = smoothed for display) ----------
-const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, fdpitch:0, fdroll:0, apmode:0, navsrc:2, cdiscale:0, msg:0, obs:0, gpss:0, live:false };
+const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, fdpitch:0, fdroll:0, apmode:0, navsrc:2, cdiscale:0, msg:0, obs:0, gpss:0, batt:100, battchg:0, battshow:0, live:false };
 const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, fdpitch:0, fdroll:0 };
 let lastData = 0;
 
@@ -156,6 +156,7 @@ const STYLE_DEFAULTS = {
   slipR: 11, slipLineH: 25, slipGap: 15,         // slip/skid: ball radius, reference-line height, gap from center
   trnStdX: 36, trnBarTh: 9, trnTickH: 9, trnArrow: 9,   // turn rate: std-rate tick offset, trend-bar thickness, tick height, arrowhead length
   dlgW: 200, dlgH: 96,   // edit dialog (Select Heading/Altitude/Course) width + height
+  battW: 30, battH: 15, battX: 3, battY: 3,   // battery indicator: icon size + top-left position
 };
 const STYLE = Object.assign({}, STYLE_DEFAULTS);
 try { Object.assign(STYLE, JSON.parse(localStorage.getItem("g5style") || "{}")); } catch (_) {}
@@ -478,7 +479,7 @@ function turnRate(g) {
 // (spec §2.3.1, fig 2-21). Magenta diamond = GPS source.
 function pfdCDI(g) {
   const { cx, aBot, aH } = g, y = aBot - aH * 0.12 - 22;
-  devScale(cx, y, STYLE.cdiW, STYLE.cdiH, false, disp.cdi, STYLE.cdiDotR, STYLE.cdiDiaR, "#d24fc8");
+  devScale(cx, y, STYLE.cdiW, STYLE.cdiH, false, disp.cdi, STYLE.cdiDotR, STYLE.cdiDiaR, navInfo(target.navsrc).c);
   hit(cx - STYLE.cdiW/2, y - STYLE.cdiH/2, STYLE.cdiW, STYLE.cdiH, ["cdiW", "cdiH", "cdiDotR", "cdiDiaR"]);
 }
 
@@ -927,8 +928,9 @@ function rosePointer(cx, cy, R, angDeg, draw) {
 }
 
 function courseNeedle(cx, cy, R) {
+  const col = navInfo(target.navsrc).c;   // magenta (GPS) / green (VLOC)
   ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(disp.crs - disp.hdg));
-  ctx.strokeStyle = MAG; ctx.fillStyle = MAG; ctx.lineWidth = 4; ctx.lineCap = "round";
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 4; ctx.lineCap = "round";
   const head = R*0.78, tail = R*0.78, gap = R*0.50;
   // course arrow (top)
   ctx.beginPath(); ctx.moveTo(0,-gap); ctx.lineTo(0,-head); ctx.stroke();
@@ -943,7 +945,7 @@ function courseNeedle(cx, cy, R) {
   for (const d of [-2,-1,1,2]) { ctx.beginPath(); ctx.arc(d*(R*0.16),0,2.6,0,7); ctx.fill(); }
   // TO/FROM triangle
   if (disp.tofrom > 0.5) {
-    ctx.fillStyle = MAG; const up = disp.tofrom < 1.5; const yy = R*0.30;
+    ctx.fillStyle = col; const up = disp.tofrom < 1.5; const yy = R*0.30;
     ctx.beginPath();
     if (up) { ctx.moveTo(0,-yy-14); ctx.lineTo(-11,-yy); ctx.lineTo(11,-yy); }
     else { ctx.moveTo(0,yy+14); ctx.lineTo(-11,yy); ctx.lineTo(11,yy); }
@@ -1055,6 +1057,46 @@ function hsiReadouts(cx, cy, R) {
 }
 
 // ---- PFD wrapper + compositor ----------------------------------------------
+// Battery status indicator (guide §1.x), boxed like the real unit: "NN%" on the
+// left, battery icon (green/yellow/red by charge, lightning bolt while charging)
+// on the right. Shown only when battshow is set (G5 backup battery isn't in
+// X-Plane, so this is demo-fed for now).
+function batteryIndicator() {
+  if (!target.battshow) return;
+  const w = STYLE.battW, h = STYLE.battH, x0 = STYLE.battX, y0 = STYLE.battY;
+  const pct = clamp(target.batt, 0, 100);
+  let col = "#16c61a"; if (pct <= 10) col = "#ff3b30"; else if (pct <= 25) col = "#ffc400";
+  const pctStr = Math.round(pct) + "%";
+  const padIn = 6, gap = 7, tnub = Math.max(2, Math.round(w * 0.08));
+  ctx.font = `700 ${Math.round(h * 1.05)}px ${FONT}`;
+  const tw = ctx.measureText(pctStr).width;
+  const boxH = h + 8, boxW = padIn + tw + gap + w + tnub + padIn;
+  // surrounding black rounded box
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#454a52"; ctx.lineWidth = 1;
+  rrect(x0, y0, boxW, boxH, 4); ctx.fill(); ctx.stroke();
+  const cy = y0 + boxH / 2;
+  // percent (left, white)
+  ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(pctStr, x0 + padIn, cy + 0.5);
+  // battery icon (right of the text)
+  const ix = x0 + padIn + tw + gap, iy = cy - h / 2;
+  ctx.lineWidth = 1.5; ctx.strokeStyle = "#cfd3d8"; ctx.fillStyle = "#000";
+  rrect(ix, iy, w, h, 2); ctx.fill(); ctx.stroke();
+  const term = Math.max(3, Math.round(h * 0.45));
+  ctx.fillStyle = "#cfd3d8"; ctx.fillRect(ix + w + 1, iy + (h - term) / 2, tnub, term);   // terminal nub
+  const pad = 2, fw = Math.max(0, (w - pad * 2) * pct / 100);
+  ctx.fillStyle = col; ctx.fillRect(ix + pad, iy + pad, fw, h - pad * 2);                  // charge fill
+  if (target.battchg) {   // lightning bolt while charging
+    const mx = ix + w / 2, my = iy + h / 2, s = h * 0.42;
+    ctx.fillStyle = "#ffd21a"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(mx + s*0.5, my - s); ctx.lineTo(mx - s*0.55, my + s*0.15); ctx.lineTo(mx, my + s*0.15);
+    ctx.lineTo(mx - s*0.5, my + s); ctx.lineTo(mx + s*0.55, my - s*0.15); ctx.lineTo(mx, my - s*0.15);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  hit(x0, y0, boxW, boxH, ["battW", "battH", "battX", "battY"]);
+}
+
 function drawPFD() {
   const g = L();
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
@@ -1063,6 +1105,7 @@ function drawPFD() {
   pfdCDI(g); turnRate(g);
   speedTape(g); vsiTape(g); altTape(g); pfdVDI(g);
   headingTape(g);
+  batteryIndicator();
 }
 
 function renderInto(unit, x, y, w, h) {
