@@ -256,13 +256,7 @@ def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
         report = device.read()
         if report:
             for ev in decoder.feed(report):
-                if hasattr(ev, "mode"):            # ModeEvent (mode already updated in the decoder)
-                    if verbose:
-                        print(f"[mode] {ev.mode}  ({'G5 MODE' if ev.mode == G5_MODE else 'aircraft'})", flush=True)
-                    continue
                 if decoder.mode == G5_MODE:
-                    if verbose:
-                        print(f"[g5] mode={decoder.mode} {ev}", flush=True)
                     _route_g5(ev)
                 elif bridge is not None:
                     bridge.handle_event(ev)
