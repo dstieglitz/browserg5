@@ -131,7 +131,7 @@ const STYLE_DEFAULTS = {
   acDeltaW: 62, acDeltaH: 16, acDeltaT: 29,      // aircraft symbol: center delta (half-width, height, inner notch half-width)
   acMarkLen: 41, acMarkH: 7, acMarkGap: 86, acMarkArrow: 7,  // level markers: length, total height, gap, inner arrowhead length
   slipR: 11, slipLineH: 25, slipGap: 15,         // slip/skid: ball radius, reference-line height, gap from center
-  trnStdX: 36, trnBarTh: 9, trnTickH: 9,         // turn rate: std-rate tick offset, trend-bar thickness, tick height
+  trnStdX: 36, trnBarTh: 9, trnTickH: 9, trnArrow: 9,   // turn rate: std-rate tick offset, trend-bar thickness, tick height, arrowhead length
 };
 const STYLE = Object.assign({}, STYLE_DEFAULTS);
 try { Object.assign(STYLE, JSON.parse(localStorage.getItem("g5style") || "{}")); } catch (_) {}
@@ -418,14 +418,18 @@ function turnRate(g) {
   ctx.moveTo(cx - stdX, y - tickH); ctx.lineTo(cx - stdX, y);
   ctx.moveTo(cx + stdX, y - tickH); ctx.lineTo(cx + stdX, y);
   ctx.stroke();
-  // magenta trend bar with a thin dark border (dark underlay)
+  // magenta trend — a level-marker-style arrow (rectangle + triangle point) in
+  // the direction of turn, with a thin dark border
   const tx = cx + clamp(disp.turn, -4.5, 4.5) * pps, by = y - 4;
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = barTh + 2;
-  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(tx, by); ctx.stroke();
-  ctx.strokeStyle = "#d24fc8"; ctx.lineWidth = barTh;
-  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(tx, by); ctx.stroke();
-  hit(cx - stdX * 1.7, y - tickH - 3, stdX * 3.4, tickH + 8, ["trnStdX", "trnBarTh", "trnTickH"]);
+  const dir = (tx >= cx) ? 1 : -1, len = Math.abs(tx - cx);
+  const ah = Math.min(STYLE.trnArrow, len + 0.5), xb = cx + dir * Math.max(0, len - ah);
+  ctx.beginPath();
+  ctx.moveTo(cx, by - barTh/2); ctx.lineTo(xb, by - barTh/2); ctx.lineTo(tx, by);
+  ctx.lineTo(xb, by + barTh/2); ctx.lineTo(cx, by + barTh/2);
+  ctx.closePath();
+  ctx.fillStyle = "#d24fc8"; ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.65)"; ctx.lineWidth = 1; ctx.lineJoin = "round"; ctx.stroke();
+  hit(cx - stdX * 1.7, y - tickH - 3, stdX * 3.4, tickH + 8, ["trnStdX", "trnBarTh", "trnTickH", "trnArrow"]);
 }
 
 // Course Deviation Indicator on the PFD — horizontal scale below the slip/skid
