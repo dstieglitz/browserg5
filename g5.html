@@ -101,10 +101,10 @@ function rrect(x, y, w, h, r) {
 // font only if the text would overflow the given width.
 // ---- live-tunable style (developer mode: press D, or open with ?dev) ------
 const STYLE_DEFAULTS = {
-  asiBoxH: 28, asiBoxFS: 17,   // airspeed readout pointer (width = speed-tape width)
-  altBoxH: 28, altBoxFS: 17,   // altitude readout pointer (width = altimeter width)
-  baroBoxH: 28, baroFS: 16, baroBoxW: 90,   // barometric setting box (width adjustable)
-  gsBoxH: 28, gsFS: 16,        // ground speed box (PFD)
+  asiBoxH: 24, asiBoxFS: 17,   // airspeed readout pointer (width = speed-tape width)
+  altBoxH: 25, altBoxFS: 17,   // altitude readout pointer (width = altimeter width)
+  baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
+  gsBoxH: 24, gsFS: 16,        // ground speed box (PFD)
   altSelBugH: 28,              // selected-altitude tape bug height
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
@@ -1044,8 +1044,12 @@ function drawHover(reg) {
     p.querySelector("#g5Msg").textContent = ok ? "copied — also shown below" : "select text below & ⌘C (also in console)";
   };
   const setVis = (v) => { p.style.display = v ? "block" : "none"; devFrozen = v; if (!v) devHighlight(null); };
-  addEventListener("keydown", (e) => { if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-    if ((e.key === "d" || e.key === "D") && !e.metaKey && !e.ctrlKey) setVis(p.style.display === "none"); });
+  addEventListener("keydown", (e) => {
+    if ((e.key === "d" || e.key === "D") && !e.metaKey && !e.ctrlKey) {
+      if (e.target && e.target.blur) e.target.blur();   // release a focused field so D always works
+      setVis(p.style.display === "none");
+    }
+  });
   if (/[?&]dev/.test(location.search)) setVis(true);
 })();
 
