@@ -9,7 +9,7 @@ and aims to match the real unit's layout, scales, colors, and knob/menu behavior
 Data streams to the browser over Server-Sent Events — no app store, and no
 third-party Python packages for the display path (`hidapi` only for `--ifr1`).
 
-> **Depends on [`ifrbridge`](https://github.com/dstieglitz/ifr-1).** `server.py` imports the sibling `ifrbridge`
+> **Depends on [`ifrbridge`](https://github.com/dstieglitz/ifrbridge).** `server.py` imports the sibling `ifrbridge`
 > package — `XPlaneClient` always, plus the IFR-1 HID layer
 > (`IFR1Device`/`Decoder`/`Bridge`) for `--ifr1`. Satisfy it either way: run
 > browserg5 **nested inside the `ifr-1` checkout** (server.py adds the repo root to
