@@ -19,24 +19,40 @@
     background: rgba(0,0,0,0.85); color: #fff; font: 600 5vw/1.4 -apple-system, system-ui, sans-serif;
     text-align: center; z-index: 10;
   }
-  #tap span { max-width: 80%; }
+  #nofly {
+    position: absolute; top: 4vh; left: 0; right: 0; text-align: center;
+    color: #ffc400; font-weight: 700; font-size: 4vw; letter-spacing: 0.12em;
+  }
+  .tapmsg { display: block; max-width: 80%; text-align: center; }
   .hint { display:block; margin-top: 3vh; font-size: 3.4vw; opacity: 0.7; font-weight: 400; }
 </style>
 </head>
 <body>
 <canvas id="g5"></canvas>
-<div id="tap"><span>Tap to start G5
-  <span class="hint">For true fullscreen: Share → Add to Home Screen, then launch from the icon. Keeps the screen awake while running.</span>
-</span></div>
+<div id="tap">
+  <div id="nofly">NOT FOR NAVIGATION</div>
+  <span class="tapmsg">Tap to start G5
+    <span class="hint">For true fullscreen: Share → Add to Home Screen, then launch from the icon. Keeps the screen awake while running.</span>
+  </span>
+</div>
 <script>
 "use strict";
 
 const FONT = "-apple-system, SF Pro Display, system-ui, Roboto, sans-serif";
 
 // ---- live state (target = from sim, disp = smoothed for display) ----------
-const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, live:false };
-const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0 };
+const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, live:false };
+const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0 };
 let lastData = 0;
+
+// Airspeed color ranges + Vspeed bugs (aircraft-specific; defaults ~ light single).
+// vs0=bottom of white, vs1=bottom of green, vfe=top of white, vno=top of green,
+// vne=red line. Tune per airframe.
+const ASI = {
+  vs0: 40, vs1: 48, vfe: 85, vno: 125, vne: 160,
+  vspeeds: [ { l: "R", v: 55 }, { l: "X", v: 62 }, { l: "Y", v: 76 } ],
+};
+let asiTrend = 0, prevIas = 0;   // predicted airspeed change over next 6 s
 
 // display mode: ?mode=pfd | hsi | both  (default both = PFD on top, HSI below)
 const MODE = (location.search.match(/[?&]mode=(pfd|hsi|both)/) || [,"both"])[1];
@@ -80,10 +96,47 @@ function rrect(x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 }
 
+// Fixed-size value box (selected altitude, baro, ground speed). FIXED pixel
+// height/font — does NOT scale with the display, per design. Auto-shrinks the
+// font only if the text would overflow the given width.
+const BOX_H = 30;
+const HDG_FS = 15;          // PFD heading-box digit size (HSI is slightly bigger)
+function valueBox(x, y, w, color, text) {
+  ctx.fillStyle = "#000"; ctx.strokeStyle = color; ctx.lineWidth = 2;
+  rrect(x, y, w, BOX_H, 4); ctx.fill(); ctx.stroke();
+  let fs = Math.round(BOX_H * 0.58); ctx.font = `700 ${fs}px ${FONT}`;
+  while (ctx.measureText(text).width > w - 8 && fs > 8) { fs--; ctx.font = `700 ${fs}px ${FONT}`; }
+  ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(text, x + w / 2, y + BOX_H / 2 + 1);
+}
+
+// Builds a "bug" marker path: a rectangle with a triangular notch CUT OUT of one
+// edge (negative space — not a protrusion). Caller sets fillStyle then fill()s.
+//   (cx,cy) = center, w/h = full size, face = edge the notch is cut into
+//   ("up"/"down"/"left"/"right"), nd = notch depth, nh = notch half-width.
+function bugPath(cx, cy, w, h, face, nd, nh) {
+  const L = w / 2, T = h / 2;
+  ctx.beginPath();
+  if (face === "right") {
+    ctx.moveTo(cx-L, cy-T); ctx.lineTo(cx+L, cy-T); ctx.lineTo(cx+L, cy-nh);
+    ctx.lineTo(cx+L-nd, cy); ctx.lineTo(cx+L, cy+nh); ctx.lineTo(cx+L, cy+T); ctx.lineTo(cx-L, cy+T);
+  } else if (face === "left") {
+    ctx.moveTo(cx+L, cy-T); ctx.lineTo(cx-L, cy-T); ctx.lineTo(cx-L, cy-nh);
+    ctx.lineTo(cx-L+nd, cy); ctx.lineTo(cx-L, cy+nh); ctx.lineTo(cx-L, cy+T); ctx.lineTo(cx+L, cy+T);
+  } else if (face === "up") {
+    ctx.moveTo(cx-L, cy-T); ctx.lineTo(cx-nh, cy-T); ctx.lineTo(cx, cy-T+nd);
+    ctx.lineTo(cx+nh, cy-T); ctx.lineTo(cx+L, cy-T); ctx.lineTo(cx+L, cy+T); ctx.lineTo(cx-L, cy+T);
+  } else { // down
+    ctx.moveTo(cx-L, cy+T); ctx.lineTo(cx-nh, cy+T); ctx.lineTo(cx, cy+T-nd);
+    ctx.lineTo(cx+nh, cy+T); ctx.lineTo(cx+L, cy+T); ctx.lineTo(cx+L, cy-T); ctx.lineTo(cx-L, cy-T);
+  }
+  ctx.closePath();
+}
+
 // ---- layout ----------------------------------------------------------------
 function L() {
   const headH = Math.round(clamp(H * 0.055, 34, 52));
-  const botH  = Math.round(clamp(H * 0.05, 30, 46));
+  const botH  = Math.round(clamp(H * 0.012, 5, 12));   // thin footer; GS/baro now boxed on the tapes
   const aTop = headH, aBot = H - botH;
   const aH = aBot - aTop;
   return {
@@ -181,18 +234,63 @@ function aircraft(g) {
     ctx.moveTo( s*2.1, 0); ctx.lineTo( s, 0); ctx.lineTo( s, s*0.42);
     ctx.stroke();
   };
+  const chevron = () => {          // center delta pointing up (spec fig 2-4)
+    ctx.beginPath();
+    ctx.moveTo(-s*0.6, s*0.34); ctx.lineTo(0, -s*0.28); ctx.lineTo(s*0.6, s*0.34);
+    ctx.stroke();
+  };
   ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.strokeStyle = "#000"; ctx.lineWidth = 7; wings();
-  ctx.strokeStyle = "#ffd21a"; ctx.lineWidth = 4; wings();
-  ctx.strokeStyle = "#000"; ctx.lineWidth = 2; ctx.fillStyle = "#ffd21a";
-  ctx.beginPath(); ctx.arc(0,0,3.4,0,7); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 7; wings(); chevron();
+  ctx.strokeStyle = "#ffd21a"; ctx.lineWidth = 4; wings(); chevron();
   ctx.restore();
+}
+
+// Turn rate indicator — bottom of the PFD. White ticks at standard rate (3°/s);
+// magenta trend bar shows current rate (spec §2.4, fig 2-11).
+function turnRate(g) {
+  const { cx, aBot } = g, y = aBot - 4;
+  const pps = (W * 0.085) / 3, stdX = 3 * pps;
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.lineCap = "butt";
+  ctx.beginPath();
+  ctx.moveTo(cx - stdX, y - 9); ctx.lineTo(cx - stdX, y);
+  ctx.moveTo(cx + stdX, y - 9); ctx.lineTo(cx + stdX, y);
+  ctx.stroke();
+  const tx = cx + clamp(disp.turn, -4.5, 4.5) * pps;
+  ctx.strokeStyle = "#d24fc8"; ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(cx, y - 4); ctx.lineTo(tx, y - 4); ctx.stroke();
+}
+
+// Course Deviation Indicator on the PFD — horizontal scale below the slip/skid
+// (spec §2.3.1, fig 2-21). Magenta diamond = GPS source.
+function pfdCDI(g) {
+  const { cx, aBot, aH } = g, y = aBot - aH * 0.055, gap = W * 0.05;
+  ctx.fillStyle = "#fff";
+  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(cx + d * gap, y, 2.6, 0, 7); ctx.fill(); }
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, y, 3, 0, 7); ctx.stroke();
+  const dx = cx + clamp(disp.cdi, -2.5, 2.5) * gap, ds = 7;
+  ctx.fillStyle = "#d24fc8"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(dx, y - ds); ctx.lineTo(dx + ds, y); ctx.lineTo(dx, y + ds); ctx.lineTo(dx - ds, y); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+}
+
+// Vertical deviation (glideslope/glidepath) diamond left of the altimeter
+// (spec §4.2, figs 2-23/2-25). Green = ILS; shown only when guidance is valid.
+function pfdVDI(g) {
+  if (target.vshow < 0.5) return;
+  const xv = (W - g.altW - g.vsiW) - 14, midY = g.midY, dotGap = g.aH * 0.15;
+  ctx.fillStyle = "#fff";
+  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(xv, midY + d * dotGap, 2.4, 0, 7); ctx.fill(); }
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xv - 7, midY); ctx.lineTo(xv + 7, midY); ctx.stroke();
+  const yy = midY - clamp(disp.vdef, -2.5, 2.5) * dotGap, ds = 7;
+  ctx.fillStyle = "#16c61a"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(xv, yy - ds); ctx.lineTo(xv + ds, yy); ctx.lineTo(xv, yy + ds); ctx.lineTo(xv - ds, yy); ctx.closePath();
+  ctx.fill(); ctx.stroke();
 }
 
 function slipBall(g) {
   // inclinometer at bottom-center of attitude
   const { cx, aBot, aH } = g;
-  const y = aBot - aH * 0.07, w = 13, gap = 6;
+  const y = aBot - aH * 0.12, w = 13, gap = 6;
   const off = clamp(disp.slip * 7, -22, 22);
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
   ctx.beginPath(); ctx.moveTo(cx-gap-w, y-9); ctx.lineTo(cx-gap, y-9);
@@ -208,18 +306,56 @@ function speedTape(g) {
   const x = 0, w = g.spdW, top = g.aTop, h = g.aH, midY = g.midY;
   ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
   ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
+  const v = disp.ias, span = (h/2)/g.pxKt;
+  const sy = (s) => midY - (s - v) * g.pxKt;
+
+  // --- color speed strip ("barber pole") on the inner edge -----------------
+  const colW = 5, outX = x + w - colW, inX = outX - 4;  // outer (green/yellow/red) + inner white
+  const lo = v - span - 12, hi = v + span + 12;
+  const seg = (s0, s1, col, xx, ww) => {
+    const a = clamp(s0, lo, hi), b = clamp(s1, lo, hi);
+    if (b <= a) return; ctx.fillStyle = col; ctx.fillRect(xx, sy(b), ww, sy(a) - sy(b));
+  };
+  seg(lo, ASI.vs0, "#c41a1a", outX, colW);     // low-speed red awareness (below Vs0)
+  seg(ASI.vs1, ASI.vno, "#16a016", outX, colW);// green normal range
+  seg(ASI.vno, ASI.vne, "#d8c41a", outX, colW);// yellow caution
+  seg(ASI.vne, hi, "#c41a1a", outX, colW);     // red (above Vne)
+  seg(ASI.vs0, ASI.vfe, "#f2f2f2", inX, 4);    // white flap operating range
+  { const y = sy(ASI.vne); ctx.fillStyle = "#c41a1a"; ctx.fillRect(inX - 1, y - 1.5, w - (inX - x), 3); } // Vne line
+
+  // --- tick marks + labels --------------------------------------------------
   ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
   ctx.font = `600 ${Math.round(g.aH*0.026)}px ${FONT}`;
   ctx.textAlign = "right"; ctx.textBaseline = "middle";
-  const v = disp.ias, span = (h/2)/g.pxKt;
   for (let s = Math.ceil((v-span)/5)*5; s <= v+span; s += 5) {
     if (s < 0) continue;
-    const y = midY - (s - v) * g.pxKt;
-    if (s % 10 === 0) { ctx.beginPath(); ctx.moveTo(x+w-9,y); ctx.lineTo(x+w,y); ctx.stroke(); ctx.fillText(s, x+w-13, y); }
-    else { ctx.beginPath(); ctx.moveTo(x+w-5,y); ctx.lineTo(x+w,y); ctx.stroke(); }
+    const y = sy(s);
+    if (s % 10 === 0) { ctx.beginPath(); ctx.moveTo(inX-2,y); ctx.lineTo(inX-7,y); ctx.stroke(); ctx.fillText(s, inX-9, y); }
+    else { ctx.beginPath(); ctx.moveTo(inX-2,y); ctx.lineTo(inX-5,y); ctx.stroke(); }
+  }
+
+  // --- airspeed trend vector (magenta, predicted 6 s) -----------------------
+  if (Math.abs(asiTrend) > 1) {
+    const yTo = sy(clamp(v + asiTrend, v - span, v + span)), yFrom = sy(v);
+    ctx.strokeStyle = "#d24fc8"; ctx.lineWidth = 4; ctx.lineCap = "butt";
+    ctx.beginPath(); ctx.moveTo(x + w - 2, yFrom); ctx.lineTo(x + w - 2, yTo); ctx.stroke();
+  }
+
+  // --- Vspeed reference tags (right of the tape) ----------------------------
+  ctx.textAlign = "left"; ctx.font = `700 ${Math.round(g.aH*0.024)}px ${FONT}`;
+  for (const vs of ASI.vspeeds) {
+    const y = sy(vs.v); if (y < top + 2 || y > top + h - 2) continue;
+    ctx.fillStyle = "#ffd21a"; ctx.fillText(vs.l, x + w - colW + 7, y);
   }
   ctx.restore();
-  readout(x, midY, w, g.aH*0.05, Math.round(v).toString(), "right");
+
+  // readout: box turns RED at/above Vne; number turns YELLOW if the trend
+  // vector reaches Vne (spec §2.1).
+  const overVne = v >= ASI.vne, trendVne = (v + asiTrend) >= ASI.vne;
+  readout(x, midY, w, Math.round(v).toString(), "right",
+          overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
+  // ground speed box at the bottom of the speed tape (magenta, fixed size)
+  valueBox(x, top + h - BOX_H, w, "#e94fd0", "GS " + Math.round(disp.gs));
 }
 
 function altTape(g) {
@@ -235,22 +371,17 @@ function altTape(g) {
     if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+9,y); ctx.stroke(); ctx.fillText(s, x+13, y); }
     else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+5,y); ctx.stroke(); }
   }
-  // selected-altitude bug (cyan), clipped to the tape
+  // selected-altitude bug (cyan), clipped to the tape — same height as the
+  // altitude readout box (BOX_H); notch cut into the edge facing the scale
   const yb = midY - (disp.altsel - v) * g.pxFt;
   ctx.fillStyle = "#19d3ff";
-  ctx.beginPath();
-  ctx.moveTo(x, yb-9); ctx.lineTo(x+7, yb-9); ctx.lineTo(x+7, yb-3);
-  ctx.lineTo(x+2, yb); ctx.lineTo(x+7, yb+3); ctx.lineTo(x+7, yb+9); ctx.lineTo(x, yb+9);
-  ctx.closePath(); ctx.fill();
+  bugPath(x + 7, yb, 14, BOX_H, "right", 10, 5); ctx.fill();
   ctx.restore();
-  readout(x, midY, w, g.aH*0.05, Math.round(v).toString(), "left");
-  // selected-altitude readout box at top of the tape (cyan)
-  const bh = Math.round(g.aH*0.045);
-  ctx.fillStyle = "#000"; ctx.strokeStyle = "#19d3ff"; ctx.lineWidth = 2;
-  rrect(x, top, w, bh, 3); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#19d3ff"; ctx.font = `700 ${Math.round(bh*0.62)}px ${FONT}`;
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(Math.round(disp.altsel).toString(), x + w/2, top + bh/2 + 1);
+  readout(x, midY, w, Math.round(v).toString(), "left");
+  // selected-altitude box (top) + barometric setting box (bottom), both cyan,
+  // both fixed size.
+  valueBox(x, top, w, "#19d3ff", Math.round(disp.altsel).toString());
+  valueBox(x, top + h - BOX_H, w, "#19d3ff", disp.baro.toFixed(2));
 }
 
 function vsiTape(g) {
@@ -263,9 +394,11 @@ function vsiTape(g) {
   ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+8,y-4); ctx.lineTo(x+8,y+4); ctx.closePath(); ctx.fill();
 }
 
-function readout(x, midY, w, h, text, side) {
-  h = Math.max(26, h); const y = midY - h/2, arrow = 9;
-  ctx.fillStyle = "#000"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+// Current-value pointer (airspeed / altitude). FIXED height/font — does not
+// scale with the display.
+function readout(x, midY, w, text, side, bg = "#000", fg = "#fff") {
+  const h = BOX_H, y = midY - h/2, arrow = 9;
+  ctx.fillStyle = bg; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
   ctx.beginPath();
   if (side === "right") {
     ctx.moveTo(x, y); ctx.lineTo(x+w-arrow, y); ctx.lineTo(x+w, midY); ctx.lineTo(x+w-arrow, y+h); ctx.lineTo(x, y+h);
@@ -273,70 +406,64 @@ function readout(x, midY, w, h, text, side) {
     ctx.moveTo(x+w, y); ctx.lineTo(x+arrow, y); ctx.lineTo(x, midY); ctx.lineTo(x+arrow, y+h); ctx.lineTo(x+w, y+h);
   }
   ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#fff"; ctx.font = `700 ${Math.round(h*0.62)}px ${FONT}`;
+  ctx.fillStyle = fg; ctx.font = `700 ${Math.round(h*0.6)}px ${FONT}`;
   ctx.textBaseline = "middle"; ctx.textAlign = side === "right" ? "right" : "left";
   ctx.fillText(text, side === "right" ? x+w-arrow-6 : x+arrow+6, midY+1);
 }
 
 // ---- heading tape (top) ----------------------------------------------------
 function headingTape(g) {
-  const h = g.headH, cx = W/2;
-  ctx.fillStyle = "rgba(8,8,10,0.9)"; ctx.fillRect(0, 0, W, h);
-  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,h); ctx.lineTo(W,h); ctx.stroke();
-  const ppd = W / 64, baseY = h - 3;
-  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,h); ctx.clip();
-  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
-  ctx.font = `600 ${Math.round(h*0.34)}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  const h = g.headH, cx = W/2, ppd = W/64;
+  // background: a blue slightly darker than the attitude sky
+  ctx.fillStyle = "#0a3f6e"; ctx.fillRect(0, 0, W, h);
+  ctx.strokeStyle = "#06243f"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,h); ctx.lineTo(W,h); ctx.stroke();
+
+  const bh = HDG_FS + 7;                          // short heading box, pinned to the top
+  ctx.font = `700 ${HDG_FS}px ${FONT}`;
+  const bw = Math.ceil(ctx.measureText("000").width) + 12;   // just wide enough for 3 digits
+  const labelY = bh / 2, tickTop = bh + 2;
   const hdg = disp.hdg, span = (W/2)/ppd;
+
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,h); ctx.clip();
+
+  // tape labels (aligned with the box) + ticks (hanging just below)
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.font = `600 ${Math.round(bh*0.6)}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (let d = Math.ceil(hdg-span); d <= hdg+span; d++) {
     if (d % 5 !== 0) continue;
     const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd;
     if (d % 10 === 0) {
-      ctx.beginPath(); ctx.moveTo(x,baseY-10); ctx.lineTo(x,baseY); ctx.stroke();
-      const lbl = dd===0?"N":dd===90?"E":dd===180?"S":dd===270?"W":(dd/10).toString().padStart(2,"0");
-      ctx.fillText(lbl, x, baseY-13);
-    } else { ctx.beginPath(); ctx.moveTo(x,baseY-6); ctx.lineTo(x,baseY); ctx.stroke(); }
+      ctx.beginPath(); ctx.moveTo(x, tickTop); ctx.lineTo(x, tickTop+8); ctx.stroke();
+      if (Math.abs(x - cx) > bw/2 + 15) {
+        const lbl = (dd===0 ? 360 : dd).toString().padStart(3, "0");
+        ctx.fillText(lbl, x, labelY);
+      }
+    } else { ctx.beginPath(); ctx.moveTo(x, tickTop); ctx.lineTo(x, tickTop+5); ctx.stroke(); }
   }
-  // heading bug (cyan) — the altitude-bug shape rotated 90°, pointing down at
-  // the scale. Clipped so it slides off the tape edges.
-  const dh = ((disp.hdgbug - hdg + 540) % 360) - 180;
-  const xb = cx + dh * ppd;
-  ctx.fillStyle = "#19d3ff";
-  ctx.beginPath();
-  ctx.moveTo(xb-9, baseY-9); ctx.lineTo(xb+9, baseY-9); ctx.lineTo(xb+9, baseY-2);
-  ctx.lineTo(xb+3, baseY-2); ctx.lineTo(xb, baseY+1); ctx.lineTo(xb-3, baseY-2);
-  ctx.lineTo(xb-9, baseY-2);
-  ctx.closePath(); ctx.fill();
-  ctx.restore();
-  // selected heading readout (top-left, cyan)
-  let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
-  ctx.fillStyle = "#19d3ff"; ctx.font = `700 ${Math.round(h*0.4)}px ${FONT}`;
-  ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText(hb.toString().padStart(3,"0")+"°", 6, h/2);
-  // center pointer + heading box
-  ctx.fillStyle = "#ffd21a"; ctx.beginPath(); ctx.moveTo(cx,h); ctx.lineTo(cx-7,h-9); ctx.lineTo(cx+7,h-9); ctx.closePath(); ctx.fill();
-  const bw = clamp(W*0.16, 56, 78), bh = h-6;
-  ctx.fillStyle="#000"; ctx.strokeStyle="#fff"; ctx.lineWidth=2; rrect(cx-bw/2,2,bw,bh,3); ctx.fill(); ctx.stroke();
-  ctx.fillStyle="#fff"; ctx.font=`700 ${Math.round(bh*0.66)}px ${FONT}`; ctx.textAlign="center"; ctx.textBaseline="middle";
-  let hh = Math.round(((hdg%360)+360)%360); if (hh===0) hh=360;
-  ctx.fillText(hh.toString().padStart(3,"0")+"°", cx, 2+bh/2+1);
-}
 
-// ---- bottom bar (GS, baro) -------------------------------------------------
-function bottomBar(g) {
-  const y = g.aBot, h = g.botH;
-  ctx.fillStyle = "#000"; ctx.fillRect(0, y, W, h);
-  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
-  const fs = Math.round(h*0.5);
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left"; ctx.font = `600 ${fs}px ${FONT}`;
-  ctx.fillStyle = "#9aa0a6"; ctx.fillText("GS", 10, y+h/2);
-  ctx.fillStyle = "#e94fd0"; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.fillText(Math.round(disp.gs).toString(), 10 + fs*1.6, y+h/2);
-  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`;
-  ctx.fillText("kt", 10 + fs*1.6 + ctx.measureText("  ").width + fs*1.4, y+h/2+1);
-  ctx.textAlign = "right"; ctx.fillStyle = "#2fd0e8"; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.fillText(disp.baro.toFixed(2) + " in", W-10, y+h/2);
+  // heading bug (cyan) — fills the tape height below the box; notch cut out of
+  // the TOP edge (facing the heading box/scale)
+  const dh = ((disp.hdgbug - hdg + 540) % 360) - 180, xb = cx + dh * ppd;
+  const by = bh, byb = h - 1, bcy = (by + byb) / 2, bhh = byb - by;
+  ctx.fillStyle = "#19d3ff";
+  bugPath(xb, bcy, 18, bhh, "up", 7, 6); ctx.fill();
+
+  // current ground-track triangle (magenta) at the bottom of the band, pointing up
+  const dt = ((disp.trk - hdg + 540) % 360) - 180, xt = cx + dt * ppd;
+  ctx.fillStyle = "#d24fc8";
+  ctx.beginPath(); ctx.moveTo(xt, h-10); ctx.lineTo(xt-7, h-1); ctx.lineTo(xt+7, h-1); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // boxed current heading — pinned to top, with a triangle tab STICKING OUT of
+  // the bottom (the lubber, pointing down at the scale); its triangle mirrors the
+  // bug's cut-out notch. Negative depth = protrusion. Thin border, no degree.
+  bugPath(cx, bh/2, bw, bh, "down", -7, 6);
+  ctx.fillStyle = "#000"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.font = `700 ${HDG_FS}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  let hh = Math.round(((hdg%360)+360)%360); if (hh===0) hh=360;
+  ctx.fillText(hh.toString().padStart(3,"0"), cx, bh/2 + 1);
 }
 
 function stale() {
@@ -349,9 +476,12 @@ function stale() {
 
 // ---- HSI mode --------------------------------------------------------------
 const ROSE_LABELS = {0:"N",30:"3",60:"6",90:"E",120:"12",150:"15",180:"S",210:"21",240:"24",270:"W",300:"30",330:"33"};
-const MAG = "#d24fc8", CYAN = "#19d3ff";
+const MAG = "#d24fc8", CYAN = "#19d3ff", GRN = "#16c61a";
+// HSI nav annunciations. navsrc/cdiscale are always shown; msg/obs/gpss are
+// capability stubs (off until wired to nav data via server/bridge).
+const HSI = { navsrc: "GPS", navcolor: MAG, cdiscale: "ENR", msg: "", obs: false, gpss: false };
 
-function drawHSI() {
+function drawHSI(unit) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
   const cx = W/2, cy = H*0.54, R = Math.min(W*0.92, H*0.78) * 0.46;
 
@@ -377,11 +507,10 @@ function drawHSI() {
   }
   ctx.restore();
 
-  // heading bug (cyan) on the ring
+  // heading bug (cyan) on the ring — notch cut out of the outer (rim) edge
   rosePointer(cx, cy, R, disp.hdgbug - disp.hdg, () => {
-    ctx.fillStyle = CYAN; ctx.beginPath();
-    ctx.moveTo(-9, -R); ctx.lineTo(9, -R); ctx.lineTo(9, -R+9); ctx.lineTo(3, -R+9); ctx.lineTo(0, -R+13); ctx.lineTo(-3, -R+9); ctx.lineTo(-9, -R+9);
-    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = CYAN;
+    bugPath(0, -R + 7, 18, 14, "up", 6, 6); ctx.fill();
   });
   // current ground track — magenta triangle at the rim + dashed radial line
   // (spec §2.2.1 / fig 2-15)
@@ -395,7 +524,11 @@ function drawHSI() {
   });
 
   courseNeedle(cx, cy, R);
+  hsiBearingPointer(cx, cy, R, unit);
   hsiAircraft(cx, cy, R);
+  hsiAnnun(cx, cy, R);
+  hsiVDI(cx, cy, R);
+  hsiLubber(cx, cy, R);
   hsiReadouts(cx, cy, R);
 }
 
@@ -441,30 +574,87 @@ function hsiAircraft(cx, cy, R) {
   ctx.restore();
 }
 
+// Lubber line + boxed current heading at the top of the HSI (fig 2-15, #15/#16).
+function hsiLubber(cx, cy, R) {
+  // lubber index triangle at the rim
+  ctx.fillStyle = "#fff"; ctx.beginPath();
+  ctx.moveTo(cx, cy - R + 2); ctx.lineTo(cx - 7, cy - R - 11); ctx.lineTo(cx + 7, cy - R - 11); ctx.closePath(); ctx.fill();
+  let hh = Math.round(((disp.hdg % 360) + 360) % 360); if (hh === 0) hh = 360;
+  // boxed current heading — only slightly bigger than the PFD heading box, WITH
+  // a degree symbol; notch cut into the bottom edge to match the bug; thin border
+  const fs = HDG_FS + 2, bh = fs + 8;
+  ctx.font = `700 ${fs}px ${FONT}`;
+  const bw = Math.ceil(ctx.measureText("000°").width) + 12;
+  const bcy = Math.max(2 + bh / 2, cy - R - 13 - bh / 2);
+  bugPath(cx, bcy, bw, bh, "down", -7, 6);
+  ctx.fillStyle = "#000"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(hh.toString().padStart(3, "0") + "°", cx, bcy + 1);
+}
+
+// Bearing pointer (light blue) — points to disp.brg; source per the unit's
+// Bearing menu setting (fig 2-16/2-17). Separated from the CDI by a white ring.
+function hsiBearingPointer(cx, cy, R, unit) {
+  if (BEARING[unit.bearingSrc] === "None") return;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 1;  // separation ring
+  ctx.beginPath(); ctx.arc(cx, cy, R * 0.55, 0, 7); ctx.stroke();
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(disp.brg - disp.hdg));
+  ctx.strokeStyle = CYAN; ctx.fillStyle = CYAN; ctx.lineWidth = 3; ctx.lineCap = "round";
+  const ro = R * 0.93, ri = R * 0.58;
+  ctx.beginPath(); ctx.moveTo(0, -ri); ctx.lineTo(0, -ro); ctx.stroke();          // head shaft
+  ctx.beginPath(); ctx.moveTo(0, -ro - 2); ctx.lineTo(-7, -ro + 13); ctx.lineTo(7, -ro + 13); ctx.closePath(); ctx.fill(); // arrow
+  ctx.beginPath(); ctx.moveTo(0, ri); ctx.lineTo(0, ro); ctx.stroke();            // tail
+  ctx.restore();
+}
+
+// Center annunciations: nav source, GPS CDI scale, message, OBS (fig 2-15).
+function hsiAnnun(cx, cy, R) {
+  ctx.textBaseline = "middle";
+  const fs = Math.round(R * 0.13);
+  ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.textAlign = "right"; ctx.fillStyle = HSI.navcolor; ctx.fillText(HSI.navsrc, cx - R * 0.22, cy - R * 0.17);
+  ctx.textAlign = "left";  ctx.fillStyle = GRN;          ctx.fillText(HSI.cdiscale, cx + R * 0.22, cy - R * 0.17);
+  if (HSI.msg) { ctx.textAlign = "right"; ctx.fillStyle = "#ffb000"; ctx.fillText(HSI.msg, cx - R * 0.22, cy + R * 0.17); }
+  if (HSI.obs) { ctx.textAlign = "left";  ctx.fillStyle = "#fff";    ctx.fillText("OBS", cx + R * 0.22, cy + R * 0.17); }
+  if (HSI.gpss) { ctx.textAlign = "left"; ctx.fillStyle = GRN; ctx.font = `700 ${Math.round(R * 0.12)}px ${FONT}`;
+                  ctx.fillText("GPSS", W * 0.03, cy - R * 0.92); }
+}
+
+// Vertical deviation diamond to the right of the rose (figs 2-24/2-26).
+function hsiVDI(cx, cy, R) {
+  if (target.vshow < 0.5) return;
+  const xv = Math.min(cx + R + 16, W - 12), dotGap = R * 0.22;
+  ctx.fillStyle = "#fff";
+  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(xv, cy + d * dotGap, 2.4, 0, 7); ctx.fill(); }
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xv - 7, cy); ctx.lineTo(xv + 7, cy); ctx.stroke();
+  const yy = cy - clamp(disp.vdef, -2.5, 2.5) * dotGap, ds = 7;
+  ctx.fillStyle = GRN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(xv, yy - ds); ctx.lineTo(xv + ds, yy); ctx.lineTo(xv, yy + ds); ctx.lineTo(xv - ds, yy); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+}
+
 function hsiReadouts(cx, cy, R) {
   const pad = Math.round(W*0.03), fs = Math.round(W*0.05);
-  ctx.textBaseline = "top";
-  // DIST top-left
-  ctx.textAlign = "left"; ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`;
-  ctx.fillText("DIST", pad, pad);
+  // DIST top-right
+  ctx.textBaseline = "top"; ctx.textAlign = "right";
+  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.55)}px ${FONT}`;
+  ctx.fillText("DIST NM", W - pad, pad);
   ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.fillText(Math.round(disp.dist).toString(), pad + fs*1.9, pad-2);
-  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.5)}px ${FONT}`;
-  ctx.fillText("nm", pad + fs*1.9 + ctx.measureText(Math.round(disp.dist)+" ").width*1.0 + fs*0.6, pad);
-  // TRK top-center
-  let trk = Math.round(((disp.trk%360)+360)%360); if (trk===0) trk=360;
-  ctx.textAlign = "center"; ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.6)}px ${FONT}`;
-  ctx.fillText("TRK", cx - fs*0.9, pad);
-  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`; ctx.textAlign = "left";
-  ctx.fillText(trk.toString().padStart(3,"0")+"°", cx - fs*0.3, pad-2);
+  ctx.fillText(Math.round(disp.dist).toString(), W - pad, pad + fs*0.65);
   // GS bottom-left
-  ctx.textBaseline = "bottom"; ctx.textAlign = "left";
-  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`; ctx.fillText("GS", pad, H-pad);
-  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`; ctx.fillText(Math.round(disp.gs).toString(), pad+fs*1.4, H-pad+2);
-  // selected heading bottom-right (magenta box)
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.55)}px ${FONT}`;
+  ctx.fillText("GS KT", pad, H - pad - fs*1.05);
+  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.textBaseline = "bottom"; ctx.fillText(Math.round(disp.gs).toString(), pad, H - pad);
+  // selected heading bottom-right (cyan box)
   let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
-  ctx.textAlign = "right"; ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.fillText(hb.toString().padStart(3,"0")+"°", W-pad, H-pad+2);
+  const bw = fs*2.7, bh = fs*1.35, bx = W - pad - bw, by = H - pad - bh;
+  ctx.fillStyle = "#000"; ctx.strokeStyle = CYAN; ctx.lineWidth = 2; rrect(bx, by, bw, bh, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = CYAN; ctx.font = `700 ${Math.round(bh*0.58)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(hb.toString().padStart(3,"0")+"°", bx + bw/2, by + bh/2 + 1);
 }
 
 // ---- PFD wrapper + compositor ----------------------------------------------
@@ -472,15 +662,16 @@ function drawPFD() {
   const g = L();
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
   attitude(g);
-  speedTape(g); altTape(g); vsiTape(g);
-  headingTape(g); bottomBar(g);
+  pfdCDI(g); turnRate(g);
+  speedTape(g); altTape(g); vsiTape(g); pfdVDI(g);
+  headingTape(g);
 }
 
-function renderInto(kind, x, y, w, h) {
+function renderInto(unit, x, y, w, h) {
   ctx.save(); ctx.translate(x, y);
   ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
   const sw = W, sh = H; W = w; H = h;
-  if (kind === "pfd") drawPFD(); else drawHSI();
+  if (unit.page === "pfd") drawPFD(unit); else drawHSI(unit);
   W = sw; H = sh; ctx.restore();
 }
 
@@ -491,6 +682,10 @@ function frame(now) {
   disp.pitch = approach(disp.pitch, target.pitch, dt, 12);
   disp.roll  = approach(disp.roll,  target.roll,  dt, 12);
   disp.ias   = approach(disp.ias,   target.ias,   dt, 8);
+  // airspeed trend = predicted change over next 6 s (smoothed accel * 6)
+  asiTrend = approach(asiTrend, clamp((target.ias - prevIas) / Math.max(dt, 1e-3) * 6, -40, 40), dt, 2);
+  prevIas = target.ias;
+  disp.vdef  = approach(disp.vdef,  target.vdef,  dt, 6);
   disp.alt   = approach(disp.alt,   target.alt,   dt, 8);
   disp.vsi   = approach(disp.vsi,   target.vsi,   dt, 6);
   disp.slip  = approach(disp.slip,  target.slip,  dt, 8);
@@ -510,7 +705,7 @@ function frame(now) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, RW, RH);
   for (let i = 0; i < units.length; i++) {
     const r = unitRegion(i);
-    renderInto(units[i].page, r.x, r.y, r.w, r.h);
+    renderInto(units[i], r.x, r.y, r.w, r.h);
   }
   if (units.length === 2) {
     ctx.strokeStyle = "#000"; ctx.lineWidth = 3;

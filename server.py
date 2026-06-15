@@ -50,6 +50,8 @@ DATAREFS: dict[str, str] = {
     "tofrom":  "sim/cockpit2/radios/indicators/hsi_flag_from_to_pilot",  # 0/1 to/2 from
     "dist":    "sim/cockpit2/radios/indicators/hsi_dme_distance_nm_pilot",
     "brg":     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag_pilot",
+    "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots
+    "vshow":   "sim/cockpit2/radios/indicators/hsi_flag_glideslope_pilot",  # 1 = vertical guidance valid
 }
 
 _last_rx = 0.0
@@ -86,6 +88,8 @@ def _demo_loop():
             "tofrom": 1.0,
             "dist": 1000.0,
             "brg": 120.0,
+            "vdef": 0.8 * math.sin(t * 0.15),   # synthetic glideslope deviation
+            "vshow": 1.0,
         }
         _last_rx = time.monotonic()
         time.sleep(0.03)
