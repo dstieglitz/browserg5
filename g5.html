@@ -103,7 +103,7 @@ const STYLE_DEFAULTS = {
   baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
   gsBoxH: 24, gsFS: 16, gsLabFS: 11,   // ground speed box (PFD): value font + "GS" label font
   altSelBugH: 28,              // selected-altitude tape bug height
-  altTapeFS: 17,               // altimeter tape numerals
+  altTapeFS: 17, altTapeFS2: 14,   // altimeter tape numerals: thousands / hundreds (smaller)
   altTapeTickMaj: 9,           // altimeter 100-ft tick length
   altTapeTickMin: 5,           // altimeter 20-ft tick length
   asiTapeFS: 17,               // airspeed tape numerals
@@ -546,7 +546,19 @@ function altTape(g) {
   const v = disp.alt, span = (h/2)/g.pxFt, tMaj = STYLE.altTapeTickMaj, tMin = STYLE.altTapeTickMin;
   for (let s = Math.ceil((v-span)/20)*20; s <= v+span; s += 20) {
     const y = midY - (s - v) * g.pxFt;
-    if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+tMaj,y); ctx.stroke(); ctx.fillText(s, x+tMaj+4, y); }
+    if (s % 100 === 0) {
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+tMaj,y); ctx.stroke();
+      // thousands at full size, hundreds-and-below at 90%
+      const thStr = "" + Math.trunc(s / 1000), rem = Math.abs(s % 1000).toString().padStart(3, "0");
+      let lx = x + tMaj + 4;
+      if (s >= 1000) {
+        ctx.font = `600 ${STYLE.altTapeFS}px ${FONT}`; ctx.fillText(thStr, lx, y);
+        lx += ctx.measureText(thStr).width + 1;
+        ctx.font = `600 ${STYLE.altTapeFS2}px ${FONT}`; ctx.fillText(rem, lx, y);
+      } else {
+        ctx.font = `600 ${STYLE.altTapeFS2}px ${FONT}`; ctx.fillText(rem, lx, y);
+      }
+    }
     else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+tMin,y); ctx.stroke(); }
   }
   // selected-altitude bug (cyan), clipped to the tape; notch cut into the edge
@@ -615,7 +627,7 @@ function headingTape(g) {
     const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd, major = (d % 5 === 0);
     ctx.lineWidth = major ? 1.5 : 1;
     ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, h - (major ? STYLE.htTickMajor : STYLE.htTickMinor)); ctx.stroke();
-    if (d % 10 === 0 && Math.abs(x - cx) > bw/2 + 15) {
+    if (d % 10 === 0) {   // draw all labels; the center box (opaque, drawn after) hides them so they slide behind it
       const lbl = (dd===0 ? 360 : dd).toString().padStart(3, "0");
       ctx.fillText(lbl, x, labelY);
     }
