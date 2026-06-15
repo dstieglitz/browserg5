@@ -98,8 +98,8 @@ function rrect(x, y, w, h, r) {   // r ignored — square corners
 // font only if the text would overflow the given width.
 // ---- live-tunable style (developer mode: press D, or open with ?dev) ------
 const STYLE_DEFAULTS = {
-  asiBoxH: 24, asiBoxFS: 17,   // airspeed readout pointer (width = speed-tape width)
-  altBoxH: 25, altBoxFS: 17,   // altitude readout pointer (width = altimeter width)
+  asiBoxH: 24, asiBoxFS: 17, asiDrumExt: 12,   // airspeed readout: box height, digit size (units drum same size), drum-box extension
+  altBoxH: 25, altBoxFS: 17, altBoxFS2: 13, altDrumExt: 12,   // altitude readout: box height, big digits, drum digits, drum-box extension above/below
   baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
   gsBoxH: 24, gsFS: 16, gsLabFS: 11,   // ground speed box (PFD): value font + "GS" label font
   altSelBugH: 28,              // selected-altitude tape bug height
@@ -522,9 +522,9 @@ function speedTape(g) {
   // readout: box turns RED at/above Vne; number turns YELLOW if the trend
   // vector reaches Vne (spec §2.1).
   const overVne = v >= ASI.vne, trendVne = (v + asiTrend) >= ASI.vne;
-  readout(x, midY, w, Math.round(v).toString(), "right", STYLE.asiBoxH, STYLE.asiBoxFS,
-          overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
-  hit(x, midY - STYLE.asiBoxH/2, w, STYLE.asiBoxH, ["asiBoxH", "asiBoxFS"]);
+  asiReadout(x, midY, w, v, STYLE.asiBoxH, STYLE.asiBoxFS, STYLE.asiBoxFS,
+             overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
+  hit(x, midY - STYLE.asiBoxH/2, w, STYLE.asiBoxH, ["asiBoxH", "asiBoxFS", "asiDrumExt"]);
   // ground speed box (magenta), flush to the bottom — small "GS" label + value
   const gy = H - STYLE.gsBoxH, gh = STYLE.gsBoxH;
   ctx.fillStyle = "#000"; ctx.strokeStyle = "#e94fd0"; ctx.lineWidth = 2;
@@ -567,8 +567,8 @@ function altTape(g) {
   ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
   bugPath(x + 7, yb, 14, STYLE.altSelBugH, "right", 10, 5); ctx.fill(); ctx.stroke();
   ctx.restore();
-  readout(x, midY, w, Math.round(v).toString(), "left", STYLE.altBoxH, STYLE.altBoxFS);
-  hit(x, midY - STYLE.altBoxH/2, w, STYLE.altBoxH, ["altBoxH", "altBoxFS"]);
+  altReadout(x, midY, w, v, STYLE.altBoxH, STYLE.altBoxFS, STYLE.altBoxFS2);
+  hit(x, midY - STYLE.altBoxH/2, w, STYLE.altBoxH, ["altBoxH", "altBoxFS", "altBoxFS2"]);
   // selected altitude — extends to the right edge of the screen; the box hugs
   // the number (~1px), font size unchanged
   selBox(x, top, W - x, STYLE.altSelBoxH, Math.round(disp.altsel).toString(), STYLE.altSelFS);
@@ -585,6 +585,95 @@ function vsiTape(g) {
   const v = clamp(disp.vsi, -2000, 2000), y = midY - (v/2000)*(h*0.38);
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x,midY); ctx.lineTo(x,y); ctx.stroke();
   ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+8,y-4); ctx.lineTo(x+8,y+4); ctx.closePath(); ctx.fill();
+}
+
+// Altitude pointer: left-arrow box; high digits in their own rolling drum (rolls
+// only across a 100-ft boundary) and the last two digits in a taller odometer
+// drum (20-ft increments) whose box extends above/below the main box.
+function altReadout(x, midY, w, v, h, fs, drumFS) {
+  const y = midY - h/2, arrow = 9, ext = STYLE.altDrumExt;
+  ctx.font = `700 ${drumFS}px ${FONT}`;
+  const drumW = Math.ceil(ctx.measureText("00").width);
+  const drumX = x + w - 5 - drumW, drumBoxL = drumX - 3;
+  // single continuous outline: main box (left arrow) + a taller drum bump on the
+  // right, no internal divider
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1; ctx.lineJoin = "miter";
+  ctx.beginPath();
+  ctx.moveTo(x, midY);
+  ctx.lineTo(x + arrow, y);
+  ctx.lineTo(drumBoxL, y);
+  ctx.lineTo(drumBoxL, y - ext);
+  ctx.lineTo(x + w, y - ext);
+  ctx.lineTo(x + w, y + h + ext);
+  ctx.lineTo(drumBoxL, y + h + ext);
+  ctx.lineTo(drumBoxL, y + h);
+  ctx.lineTo(x + arrow, y + h);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // high digits — roll only in the last 20 ft before a 100-ft boundary
+  const jHi = Math.floor(v / 100), within = v - jHi * 100;
+  const hf = within < 80 ? 0 : (within - 80) / 20, hlh = fs * 1.05;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x + arrow, y + 1, drumBoxL - (x + arrow), h - 2); ctx.clip();
+  ctx.fillStyle = "#fff"; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText("" + jHi,       drumX - 2, midY + hf * hlh + 1);
+  ctx.fillText("" + (jHi + 1), drumX - 2, midY - (1 - hf) * hlh + 1);
+  ctx.restore();
+
+  // low drum — last two digits, 20-ft increments, in the extended box
+  ctx.save();
+  ctx.beginPath(); ctx.rect(drumBoxL, y - ext + 1, x + w - drumBoxL, h + 2*ext - 2); ctx.clip();
+  ctx.fillStyle = "#fff"; ctx.font = `700 ${drumFS}px ${FONT}`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  const step = 20, lineH = drumFS * 1.05, i0 = Math.round(v / step);
+  const n = Math.ceil((h/2 + ext) / lineH) + 1;
+  for (let k = -n; k <= n; k++) {
+    const i = i0 + k, val = (((i * step) % 100) + 100) % 100;
+    const yy = midY + ((v - i * step) / step) * lineH;
+    ctx.fillText(val.toString().padStart(2, "0"), drumX, yy + 1);
+  }
+  ctx.restore();
+}
+
+// Airspeed pointer: right-arrow box; high digits in their own roll-on-boundary
+// drum and the units digit in a taller 1-wide odometer drum (1-kt increments).
+function asiReadout(x, midY, w, v, h, fs, drumFS, bg, fg) {
+  const y = midY - h/2, arrow = 9, ext = STYLE.asiDrumExt;
+  ctx.font = `700 ${drumFS}px ${FONT}`;
+  const drumW = Math.ceil(ctx.measureText("0").width);
+  const bumpR = x + w - arrow, drumX = bumpR - 3 - drumW, bumpL = drumX - 3;
+  // single continuous outline: main box + taller units-drum bump + right arrow
+  ctx.fillStyle = bg; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1; ctx.lineJoin = "miter";
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(bumpL, y); ctx.lineTo(bumpL, y - ext); ctx.lineTo(bumpR, y - ext); ctx.lineTo(bumpR, y);
+  ctx.lineTo(x + w, midY);                          // arrow apex (right)
+  ctx.lineTo(bumpR, y + h); ctx.lineTo(bumpR, y + h + ext); ctx.lineTo(bumpL, y + h + ext); ctx.lineTo(bumpL, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // high digits (floor(v/10)) — roll only in the last 1 kt before a 10-kt boundary
+  const jHi = Math.floor(v / 10), within = v - jHi * 10;
+  const hf = within < 9 ? 0 : (within - 9), hlh = fs * 1.05;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x + 1, y + 1, bumpL - x + 2, h - 2); ctx.clip();
+  ctx.fillStyle = fg; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText("" + jHi,       bumpL + 1, midY + hf * hlh + 1);
+  ctx.fillText("" + (jHi + 1), bumpL + 1, midY - (1 - hf) * hlh + 1);
+  ctx.restore();
+
+  // units drum — clipped to the bump
+  ctx.save();
+  ctx.beginPath(); ctx.rect(bumpL, y - ext + 1, bumpR - bumpL, h + 2*ext - 2); ctx.clip();
+  ctx.fillStyle = fg; ctx.font = `700 ${drumFS}px ${FONT}`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  const lineH = drumFS * 1.05, i0 = Math.round(v), n = Math.ceil((h/2 + ext) / lineH) + 1;
+  for (let k = -n; k <= n; k++) {
+    const i = i0 + k, val = ((i % 10) + 10) % 10;
+    const yy = midY + (v - i) * lineH;
+    ctx.fillText("" + val, drumX, yy + 1);
+  }
+  ctx.restore();
 }
 
 // Current-value pointer (airspeed / altitude). FIXED height/font — does not
