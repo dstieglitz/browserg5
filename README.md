@@ -4,9 +4,7 @@
 
 A browser-based **simulation of the Garmin G5 Electronic Flight Instrument**,
 fed live from X-Plane. It renders the G5's PFD and HSI pages on an HTML canvas
-and aims to match the real unit's layout, scales, colors, and knob/menu behavior
-as documented in the [G5 Pilot's Guide](pilots_guide.pdf) (distilled into
-[`docs/`](docs/)).
+and aims to match the real unit's layout, scales, colors, and knob/menu behavior.
 
 Data streams to the browser over Server-Sent Events — no app store, and no
 third-party Python packages for the display path (`hidapi` only for `--ifr1`).
