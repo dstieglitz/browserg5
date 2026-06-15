@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="G5">
+<meta name="theme-color" content="#000000">
+<title>G5</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+  body { position: fixed; inset: 0; touch-action: none; }
+  #g5 { display: block; width: 100vw; height: 100vh; }
+  #tap {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.85); color: #fff; font: 600 5vw/1.4 -apple-system, system-ui, sans-serif;
+    text-align: center; z-index: 10;
+  }
+  #tap span { max-width: 80%; }
+  .hint { display:block; margin-top: 3vh; font-size: 3.4vw; opacity: 0.7; font-weight: 400; }
+</style>
+</head>
+<body>
+<canvas id="g5"></canvas>
+<div id="tap"><span>Tap to start G5
+  <span class="hint">For true fullscreen: Share → Add to Home Screen, then launch from the icon. Keeps the screen awake while running.</span>
+</span></div>
+<script>
+"use strict";
+
+const FONT = "-apple-system, SF Pro Display, system-ui, Roboto, sans-serif";
+
+// ---- live state (target = from sim, disp = smoothed for display) ----------
+const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, live:false };
+const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0 };
+let lastData = 0;
+
+// display mode: ?mode=pfd | hsi | both  (default both = PFD on top, HSI below)
+const MODE = (location.search.match(/[?&]mode=(pfd|hsi|both)/) || [,"both"])[1];
+
+// Fields the knob has taken local control of are not overwritten by the sim
+// stream (the simulated unit is authoritative for what its knob sets).
+const override = {};
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      for (const k in target) if (k in d && !override[k]) target[k] = d[k];
+      dispatchBridgeInputs(d);   // controller inputs forwarded by the bridge
+      lastData = performance.now();
+    } catch (_) {}
+  };
+}
+
+// ---- canvas ----------------------------------------------------------------
+const cvs = document.getElementById("g5");
+const ctx = cvs.getContext("2d");
+let W = 0, H = 0, DPR = 1, RW = 0, RH = 0;   // RW/RH = real canvas; W/H = current instrument
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  RW = W = window.innerWidth; RH = H = window.innerHeight;
+  cvs.width = Math.round(RW * DPR); cvs.height = Math.round(RH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => setTimeout(resize, 200));
+
+const rad = (d) => d * Math.PI / 180;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function approach(c, t, dt, r) { return c + (t - c) * Math.min(1, dt * r); }
+function approachAngle(c, t, dt, r) { let d = ((t - c + 540) % 360) - 180; return c + d * Math.min(1, dt * r); }
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+// ---- layout ----------------------------------------------------------------
+function L() {
+  const headH = Math.round(clamp(H * 0.055, 34, 52));
+  const botH  = Math.round(clamp(H * 0.05, 30, 46));
+  const aTop = headH, aBot = H - botH;
+  const aH = aBot - aTop;
+  return {
+    headH, botH, aTop, aBot, aH,
+    cx: W / 2,
+    cy: aTop + aH * 0.45,
+    ppd: aH / 42,                       // pitch px/deg (~±21° visible)
+    spdW: clamp(W * 0.15, 50, 78),
+    altW: clamp(W * 0.18, 62, 92),
+    vsiW: 18,
+    pxKt: (aH / 2) / 45,                // ±45 kt
+    pxFt: (aH / 2) / 320,               // ±320 ft
+    midY: aTop + aH / 2,
+  };
+}
+
+// ---- attitude --------------------------------------------------------------
+function attitude(g) {
+  const { cx, cy, aTop, aH, ppd } = g;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, aTop, W, aH); ctx.clip();
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(rad(-disp.roll)); ctx.translate(0, disp.pitch * ppd);
+
+  const big = (W + aH) * 2;
+  let sky = ctx.createLinearGradient(0, -big, 0, 0);
+  sky.addColorStop(0, "#0c4f8f"); sky.addColorStop(1, "#2a90df");
+  ctx.fillStyle = sky; ctx.fillRect(-big, -big, big * 2, big);
+  let gnd = ctx.createLinearGradient(0, 0, 0, big);
+  gnd.addColorStop(0, "#8a5a2c"); gnd.addColorStop(1, "#4d3318");
+  ctx.fillStyle = gnd; ctx.fillRect(-big, 0, big * 2, big);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-big, 0); ctx.lineTo(big, 0); ctx.stroke();
+
+  // pitch ladder
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 2;
+  ctx.font = `600 ${Math.round(aH*0.022)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let p = -90; p <= 90; p += 2.5) {
+    if (p === 0) continue;
+    const y = -p * ppd;
+    if (Math.abs(y) > aH * 0.55) continue;
+    let hw;
+    if (p % 10 === 0) hw = aH * 0.085;
+    else if (p % 5 === 0) hw = aH * 0.05;
+    else hw = aH * 0.025;
+    ctx.beginPath(); ctx.moveTo(-hw, y); ctx.lineTo(hw, y); ctx.stroke();
+    if (p % 10 === 0) {
+      const a = Math.abs(p);
+      ctx.fillText(a, -hw - 14, y); ctx.fillText(a, hw + 14, y);
+    }
+  }
+  ctx.restore();
+  ctx.restore();
+
+  rollScale(g);
+  slipBall(g);
+  aircraft(g);
+}
+
+function rollScale(g) {
+  const { cx, cy, aH } = g;
+  const R = aH * 0.40;
+  ctx.save(); ctx.translate(cx, cy);
+  // arc is the inner rim; ticks extend OUTWARD from it
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, 0, R, rad(-90 - 60), rad(-90 + 60)); ctx.stroke();
+  for (const t of [-60,-45,-30,-20,-10,0,10,20,30,45,60]) {
+    const th = rad(-90 + t);
+    const major = (t % 30 === 0 || t === 0);
+    const len = major ? 13 : 8;
+    ctx.lineWidth = major ? 2.5 : 1.8;
+    ctx.beginPath();
+    ctx.moveTo(R*Math.cos(th), R*Math.sin(th));
+    ctx.lineTo((R+len)*Math.cos(th), (R+len)*Math.sin(th));
+    ctx.stroke();
+  }
+  // fixed reference triangle at top (apex down)
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.moveTo(0,-R+2); ctx.lineTo(-8,-R-12); ctx.lineTo(8,-R-12); ctx.closePath(); ctx.fill();
+  // moving roll pointer (apex up to the scale) — white per spec (fig 2-4)
+  ctx.rotate(rad(disp.roll));
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.moveTo(0,-R+3); ctx.lineTo(-9,-R+17); ctx.lineTo(9,-R+17); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function aircraft(g) {
+  const { cx, cy, aH } = g;
+  const s = aH * 0.075;            // wing length
+  ctx.save(); ctx.translate(cx, cy);
+  const wings = () => {
+    ctx.beginPath();
+    ctx.moveTo(-s*2.1, 0); ctx.lineTo(-s, 0); ctx.lineTo(-s, s*0.42);
+    ctx.moveTo( s*2.1, 0); ctx.lineTo( s, 0); ctx.lineTo( s, s*0.42);
+    ctx.stroke();
+  };
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 7; wings();
+  ctx.strokeStyle = "#ffd21a"; ctx.lineWidth = 4; wings();
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 2; ctx.fillStyle = "#ffd21a";
+  ctx.beginPath(); ctx.arc(0,0,3.4,0,7); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+function slipBall(g) {
+  // inclinometer at bottom-center of attitude
+  const { cx, aBot, aH } = g;
+  const y = aBot - aH * 0.07, w = 13, gap = 6;
+  const off = clamp(disp.slip * 7, -22, 22);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(cx-gap-w, y-9); ctx.lineTo(cx-gap, y-9);
+  ctx.moveTo(cx+gap, y-9); ctx.lineTo(cx+gap+w, y-9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx-gap, y-9); ctx.lineTo(cx-gap, y+5);
+  ctx.moveTo(cx+gap, y-9); ctx.lineTo(cx+gap, y+5); ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx+off, y-2, 5.2, 0, 7); ctx.fill(); ctx.stroke();
+}
+
+// ---- tapes -----------------------------------------------------------------
+function speedTape(g) {
+  const x = 0, w = g.spdW, top = g.aTop, h = g.aH, midY = g.midY;
+  ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
+  ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.font = `600 ${Math.round(g.aH*0.026)}px ${FONT}`;
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  const v = disp.ias, span = (h/2)/g.pxKt;
+  for (let s = Math.ceil((v-span)/5)*5; s <= v+span; s += 5) {
+    if (s < 0) continue;
+    const y = midY - (s - v) * g.pxKt;
+    if (s % 10 === 0) { ctx.beginPath(); ctx.moveTo(x+w-9,y); ctx.lineTo(x+w,y); ctx.stroke(); ctx.fillText(s, x+w-13, y); }
+    else { ctx.beginPath(); ctx.moveTo(x+w-5,y); ctx.lineTo(x+w,y); ctx.stroke(); }
+  }
+  ctx.restore();
+  readout(x, midY, w, g.aH*0.05, Math.round(v).toString(), "right");
+}
+
+function altTape(g) {
+  const x = W - g.altW - g.vsiW, w = g.altW, top = g.aTop, h = g.aH, midY = g.midY;
+  ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
+  ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.font = `600 ${Math.round(g.aH*0.024)}px ${FONT}`;
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  const v = disp.alt, span = (h/2)/g.pxFt;
+  for (let s = Math.ceil((v-span)/20)*20; s <= v+span; s += 20) {
+    const y = midY - (s - v) * g.pxFt;
+    if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+9,y); ctx.stroke(); ctx.fillText(s, x+13, y); }
+    else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+5,y); ctx.stroke(); }
+  }
+  // selected-altitude bug (cyan), clipped to the tape
+  const yb = midY - (disp.altsel - v) * g.pxFt;
+  ctx.fillStyle = "#19d3ff";
+  ctx.beginPath();
+  ctx.moveTo(x, yb-9); ctx.lineTo(x+7, yb-9); ctx.lineTo(x+7, yb-3);
+  ctx.lineTo(x+2, yb); ctx.lineTo(x+7, yb+3); ctx.lineTo(x+7, yb+9); ctx.lineTo(x, yb+9);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  readout(x, midY, w, g.aH*0.05, Math.round(v).toString(), "left");
+  // selected-altitude readout box at top of the tape (cyan)
+  const bh = Math.round(g.aH*0.045);
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#19d3ff"; ctx.lineWidth = 2;
+  rrect(x, top, w, bh, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#19d3ff"; ctx.font = `700 ${Math.round(bh*0.62)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(Math.round(disp.altsel).toString(), x + w/2, top + bh/2 + 1);
+}
+
+function vsiTape(g) {
+  const x = W - g.vsiW, w = g.vsiW, top = g.aTop, h = g.aH, midY = g.midY;
+  ctx.fillStyle = "rgba(15,15,18,0.6)"; ctx.fillRect(x, top, w, h);
+  ctx.strokeStyle = "#777"; ctx.lineWidth = 1;
+  for (let k = -2; k <= 2; k++) { const y = midY - k*(h*0.19); ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+4,y); ctx.stroke(); }
+  const v = clamp(disp.vsi, -2000, 2000), y = midY - (v/2000)*(h*0.38);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x,midY); ctx.lineTo(x,y); ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+8,y-4); ctx.lineTo(x+8,y+4); ctx.closePath(); ctx.fill();
+}
+
+function readout(x, midY, w, h, text, side) {
+  h = Math.max(26, h); const y = midY - h/2, arrow = 9;
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (side === "right") {
+    ctx.moveTo(x, y); ctx.lineTo(x+w-arrow, y); ctx.lineTo(x+w, midY); ctx.lineTo(x+w-arrow, y+h); ctx.lineTo(x, y+h);
+  } else {
+    ctx.moveTo(x+w, y); ctx.lineTo(x+arrow, y); ctx.lineTo(x, midY); ctx.lineTo(x+arrow, y+h); ctx.lineTo(x+w, y+h);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.font = `700 ${Math.round(h*0.62)}px ${FONT}`;
+  ctx.textBaseline = "middle"; ctx.textAlign = side === "right" ? "right" : "left";
+  ctx.fillText(text, side === "right" ? x+w-arrow-6 : x+arrow+6, midY+1);
+}
+
+// ---- heading tape (top) ----------------------------------------------------
+function headingTape(g) {
+  const h = g.headH, cx = W/2;
+  ctx.fillStyle = "rgba(8,8,10,0.9)"; ctx.fillRect(0, 0, W, h);
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,h); ctx.lineTo(W,h); ctx.stroke();
+  const ppd = W / 64, baseY = h - 3;
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,h); ctx.clip();
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.font = `600 ${Math.round(h*0.34)}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  const hdg = disp.hdg, span = (W/2)/ppd;
+  for (let d = Math.ceil(hdg-span); d <= hdg+span; d++) {
+    if (d % 5 !== 0) continue;
+    const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd;
+    if (d % 10 === 0) {
+      ctx.beginPath(); ctx.moveTo(x,baseY-10); ctx.lineTo(x,baseY); ctx.stroke();
+      const lbl = dd===0?"N":dd===90?"E":dd===180?"S":dd===270?"W":(dd/10).toString().padStart(2,"0");
+      ctx.fillText(lbl, x, baseY-13);
+    } else { ctx.beginPath(); ctx.moveTo(x,baseY-6); ctx.lineTo(x,baseY); ctx.stroke(); }
+  }
+  // heading bug (cyan) — the altitude-bug shape rotated 90°, pointing down at
+  // the scale. Clipped so it slides off the tape edges.
+  const dh = ((disp.hdgbug - hdg + 540) % 360) - 180;
+  const xb = cx + dh * ppd;
+  ctx.fillStyle = "#19d3ff";
+  ctx.beginPath();
+  ctx.moveTo(xb-9, baseY-9); ctx.lineTo(xb+9, baseY-9); ctx.lineTo(xb+9, baseY-2);
+  ctx.lineTo(xb+3, baseY-2); ctx.lineTo(xb, baseY+1); ctx.lineTo(xb-3, baseY-2);
+  ctx.lineTo(xb-9, baseY-2);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  // selected heading readout (top-left, cyan)
+  let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
+  ctx.fillStyle = "#19d3ff"; ctx.font = `700 ${Math.round(h*0.4)}px ${FONT}`;
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(hb.toString().padStart(3,"0")+"°", 6, h/2);
+  // center pointer + heading box
+  ctx.fillStyle = "#ffd21a"; ctx.beginPath(); ctx.moveTo(cx,h); ctx.lineTo(cx-7,h-9); ctx.lineTo(cx+7,h-9); ctx.closePath(); ctx.fill();
+  const bw = clamp(W*0.16, 56, 78), bh = h-6;
+  ctx.fillStyle="#000"; ctx.strokeStyle="#fff"; ctx.lineWidth=2; rrect(cx-bw/2,2,bw,bh,3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle="#fff"; ctx.font=`700 ${Math.round(bh*0.66)}px ${FONT}`; ctx.textAlign="center"; ctx.textBaseline="middle";
+  let hh = Math.round(((hdg%360)+360)%360); if (hh===0) hh=360;
+  ctx.fillText(hh.toString().padStart(3,"0")+"°", cx, 2+bh/2+1);
+}
+
+// ---- bottom bar (GS, baro) -------------------------------------------------
+function bottomBar(g) {
+  const y = g.aBot, h = g.botH;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, y, W, h);
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  const fs = Math.round(h*0.5);
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left"; ctx.font = `600 ${fs}px ${FONT}`;
+  ctx.fillStyle = "#9aa0a6"; ctx.fillText("GS", 10, y+h/2);
+  ctx.fillStyle = "#e94fd0"; ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText(Math.round(disp.gs).toString(), 10 + fs*1.6, y+h/2);
+  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`;
+  ctx.fillText("kt", 10 + fs*1.6 + ctx.measureText("  ").width + fs*1.4, y+h/2+1);
+  ctx.textAlign = "right"; ctx.fillStyle = "#2fd0e8"; ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText(disp.baro.toFixed(2) + " in", W-10, y+h/2);
+}
+
+function stale() {
+  ctx.fillStyle="rgba(0,0,0,0.62)"; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="#ff3b30"; ctx.font=`700 ${Math.round(W*0.075)}px ${FONT}`;
+  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("NO DATA", W/2, H/2);
+  ctx.fillStyle="#fff"; ctx.font=`400 ${Math.round(W*0.035)}px ${FONT}`;
+  ctx.fillText("waiting for X-Plane…", W/2, H/2 + H*0.05);
+}
+
+// ---- HSI mode --------------------------------------------------------------
+const ROSE_LABELS = {0:"N",30:"3",60:"6",90:"E",120:"12",150:"15",180:"S",210:"21",240:"24",270:"W",300:"30",330:"33"};
+const MAG = "#d24fc8", CYAN = "#19d3ff";
+
+function drawHSI() {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const cx = W/2, cy = H*0.54, R = Math.min(W*0.92, H*0.78) * 0.46;
+
+  // rotating compass card
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(-disp.hdg));
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let a = 0; a < 360; a += 5) {
+    const major = a % 30 === 0, med = a % 10 === 0;
+    const len = major ? 16 : med ? 11 : 7;
+    ctx.lineWidth = major ? 2.5 : 1.4;
+    const th = rad(a - 90);
+    ctx.beginPath();
+    ctx.moveTo((R-len)*Math.cos(th), (R-len)*Math.sin(th));
+    ctx.lineTo(R*Math.cos(th), R*Math.sin(th));
+    ctx.stroke();
+    if (a in ROSE_LABELS) {
+      const cardinal = (a % 90 === 0);
+      ctx.font = `${cardinal?700:600} ${Math.round(R*(cardinal?0.17:0.13))}px ${FONT}`;
+      const rr = R - len - R*0.12;
+      ctx.save(); ctx.translate(rr*Math.cos(th), rr*Math.sin(th)); ctx.rotate(rad(a)); ctx.fillText(ROSE_LABELS[a], 0, 0); ctx.restore();
+    }
+  }
+  ctx.restore();
+
+  // heading bug (cyan) on the ring
+  rosePointer(cx, cy, R, disp.hdgbug - disp.hdg, () => {
+    ctx.fillStyle = CYAN; ctx.beginPath();
+    ctx.moveTo(-9, -R); ctx.lineTo(9, -R); ctx.lineTo(9, -R+9); ctx.lineTo(3, -R+9); ctx.lineTo(0, -R+13); ctx.lineTo(-3, -R+9); ctx.lineTo(-9, -R+9);
+    ctx.closePath(); ctx.fill();
+  });
+  // current ground track — magenta triangle at the rim + dashed radial line
+  // (spec §2.2.1 / fig 2-15)
+  rosePointer(cx, cy, R, disp.trk - disp.hdg, () => {
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = MAG; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, -R + 14); ctx.lineTo(0, 0); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = MAG; ctx.beginPath();
+    ctx.moveTo(0, -R + 14); ctx.lineTo(-8, -R - 2); ctx.lineTo(8, -R - 2);
+    ctx.closePath(); ctx.fill();
+  });
+
+  courseNeedle(cx, cy, R);
+  hsiAircraft(cx, cy, R);
+  hsiReadouts(cx, cy, R);
+}
+
+function rosePointer(cx, cy, R, angDeg, draw) {
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(angDeg)); draw(); ctx.restore();
+}
+
+function courseNeedle(cx, cy, R) {
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(disp.crs - disp.hdg));
+  ctx.strokeStyle = MAG; ctx.fillStyle = MAG; ctx.lineWidth = 4; ctx.lineCap = "round";
+  const head = R*0.78, tail = R*0.78, gap = R*0.50;
+  // course arrow (top)
+  ctx.beginPath(); ctx.moveTo(0,-gap); ctx.lineTo(0,-head); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,-head-2); ctx.lineTo(-10,-head+16); ctx.lineTo(10,-head+16); ctx.closePath(); ctx.fill();
+  // tail
+  ctx.beginPath(); ctx.moveTo(0,gap); ctx.lineTo(0,tail); ctx.stroke();
+  // CDI deviation bar (center), offset by dots
+  const dev = clamp(disp.cdi, -2.5, 2.5) * (R*0.16);
+  ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(dev,-gap*0.86); ctx.lineTo(dev,gap*0.86); ctx.stroke();
+  // deviation dots
+  ctx.fillStyle = "#fff";
+  for (const d of [-2,-1,1,2]) { ctx.beginPath(); ctx.arc(d*(R*0.16),0,2.6,0,7); ctx.fill(); }
+  // TO/FROM triangle
+  if (disp.tofrom > 0.5) {
+    ctx.fillStyle = MAG; const up = disp.tofrom < 1.5; const yy = R*0.30;
+    ctx.beginPath();
+    if (up) { ctx.moveTo(0,-yy-14); ctx.lineTo(-11,-yy); ctx.lineTo(11,-yy); }
+    else { ctx.moveTo(0,yy+14); ctx.lineTo(-11,yy); ctx.lineTo(11,yy); }
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function hsiAircraft(cx, cy, R) {
+  ctx.save(); ctx.translate(cx, cy);
+  const s = R*0.16;
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 4; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(0,-s*1.2); ctx.lineTo(0,s*1.3);             // fuselage
+  ctx.moveTo(-s*1.4,0); ctx.lineTo(s*1.4,0);             // main wing
+  ctx.moveTo(-s*0.6,s); ctx.lineTo(s*0.6,s);             // tail
+  ctx.stroke();
+  ctx.restore();
+}
+
+function hsiReadouts(cx, cy, R) {
+  const pad = Math.round(W*0.03), fs = Math.round(W*0.05);
+  ctx.textBaseline = "top";
+  // DIST top-left
+  ctx.textAlign = "left"; ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`;
+  ctx.fillText("DIST", pad, pad);
+  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText(Math.round(disp.dist).toString(), pad + fs*1.9, pad-2);
+  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.5)}px ${FONT}`;
+  ctx.fillText("nm", pad + fs*1.9 + ctx.measureText(Math.round(disp.dist)+" ").width*1.0 + fs*0.6, pad);
+  // TRK top-center
+  let trk = Math.round(((disp.trk%360)+360)%360); if (trk===0) trk=360;
+  ctx.textAlign = "center"; ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.6)}px ${FONT}`;
+  ctx.fillText("TRK", cx - fs*0.9, pad);
+  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`; ctx.textAlign = "left";
+  ctx.fillText(trk.toString().padStart(3,"0")+"°", cx - fs*0.3, pad-2);
+  // GS bottom-left
+  ctx.textBaseline = "bottom"; ctx.textAlign = "left";
+  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.7)}px ${FONT}`; ctx.fillText("GS", pad, H-pad);
+  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`; ctx.fillText(Math.round(disp.gs).toString(), pad+fs*1.4, H-pad+2);
+  // selected heading bottom-right (magenta box)
+  let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
+  ctx.textAlign = "right"; ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.fillText(hb.toString().padStart(3,"0")+"°", W-pad, H-pad+2);
+}
+
+// ---- PFD wrapper + compositor ----------------------------------------------
+function drawPFD() {
+  const g = L();
+  ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
+  attitude(g);
+  speedTape(g); altTape(g); vsiTape(g);
+  headingTape(g); bottomBar(g);
+}
+
+function renderInto(kind, x, y, w, h) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+  const sw = W, sh = H; W = w; H = h;
+  if (kind === "pfd") drawPFD(); else drawHSI();
+  W = sw; H = sh; ctx.restore();
+}
+
+// ---- loop ------------------------------------------------------------------
+let prevT = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - prevT)/1000); prevT = now;
+  disp.pitch = approach(disp.pitch, target.pitch, dt, 12);
+  disp.roll  = approach(disp.roll,  target.roll,  dt, 12);
+  disp.ias   = approach(disp.ias,   target.ias,   dt, 8);
+  disp.alt   = approach(disp.alt,   target.alt,   dt, 8);
+  disp.vsi   = approach(disp.vsi,   target.vsi,   dt, 6);
+  disp.slip  = approach(disp.slip,  target.slip,  dt, 8);
+  disp.baro  = approach(disp.baro,  target.baro,  dt, 6);
+  disp.gs    = approach(disp.gs,    target.gs,    dt, 6);
+  disp.altsel = approach(disp.altsel, target.altsel, dt, 8);
+  disp.cdi   = approach(disp.cdi,   target.cdi,   dt, 6);
+  disp.dist  = approach(disp.dist,  target.dist,  dt, 6);
+  disp.tofrom = target.tofrom;
+  disp.hdg    = approachAngle(disp.hdg, target.hdg, dt, 8);
+  disp.hdgbug = approachAngle(disp.hdgbug, target.hdgbug, dt, 8);
+  disp.trk    = approachAngle(disp.trk, target.trk, dt, 8);
+  disp.crs    = approachAngle(disp.crs, target.crs, dt, 8);
+  disp.brg    = approachAngle(disp.brg, target.brg, dt, 8);
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, RW, RH);
+  for (let i = 0; i < units.length; i++) {
+    const r = unitRegion(i);
+    renderInto(units[i].page, r.x, r.y, r.w, r.h);
+  }
+  if (units.length === 2) {
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
+    const half = Math.round(RH / 2);
+    ctx.beginPath(); ctx.moveTo(0, half); ctx.lineTo(RW, half); ctx.stroke();
+  }
+  if (!target.live || (performance.now() - lastData > 2000)) { W = RW; H = RH; stale(); }
+  W = RW; H = RH;
+  for (let i = 0; i < units.length; i++) {
+    const r = unitRegion(i);
+    drawUnitMenu(units[i], r);
+    drawEditDialog(units[i], r);
+  }
+  if (units.length === 2 && hoverIdx >= 0) drawHover(unitRegion(hoverIdx));
+  requestAnimationFrame(frame);
+}
+
+// ===== Knob + button input ==================================================
+// The real G5 has two operable inputs (power ignored): the knob TURN and the
+// knob PRESS. In `both` mode there are TWO independent units stacked (TOP_G5 =
+// PFD, BOTTOM_G5 = HSI), each with its own knob/menu state.
+//
+// Inputs are decoupled from their source. The canonical entry point is
+//   g5Input(unitId, action)   action: "cw" | "ccw" | "press"
+// Two sources feed it:
+//   1. Hardware controller via the ifr-1 bridge (production) — the bridge maps a
+//      physical knob to a unit id and calls g5Input (see dispatchBridgeInputs;
+//      events ride the existing SSE stream as `_inputs`). [transport TBD]
+//   2. Mouse (TESTING ONLY) — scroll wheel = turn, button 1 = press, routed to
+//      whichever unit the cursor is hovering over.
+//
+// Per-unit state machine (docs/01 §1.4–1.5):
+//   closed: turn adjusts baro (PFD) / heading bug (HSI); press opens Menu
+//   menu:   turn moves cursor; press activates the item
+//   edit:   turn changes the value; press accepts (back to menu)
+const BEARING = ["None", "GPS", "VLOC"];
+function makeUnit(id, page) {
+  return { id, page, ui: { mode: "closed", idx: 1, edit: null }, bearingSrc: 1 };
+}
+// Position-based ids so the bridge mapping is stable regardless of page config.
+const units = MODE === "both"
+  ? [makeUnit("TOP_G5", "pfd"), makeUnit("BOTTOM_G5", "hsi")]
+  : [makeUnit("TOP_G5", MODE)];
+const unitById = Object.fromEntries(units.map((u) => [u.id, u]));
+let hoverIdx = -1;                                       // unit under cursor (testing aid)
+
+function unitRegion(i) {
+  if (units.length === 1) return { x: 0, y: 0, w: RW, h: RH };
+  const half = Math.round(RH / 2);
+  return i === 0 ? { x: 0, y: 0, w: RW, h: half } : { x: 0, y: half, w: RW, h: RH - half };
+}
+const unitIndexAt = (py) => (units.length === 1 ? 0 : (py < RH / 2 ? 0 : 1));
+
+function menuItems(u) {
+  return u.page === "hsi"
+    ? ["Back", "Heading", "Bearing", "PFD"]
+    : ["Back", "Heading", "Altitude", "HSI"];
+}
+
+const cur = (k) => (override[k] ? target[k] : disp[k]);   // current effective value
+function setBaro(d)   { target.baro   = clamp(cur("baro") + d * 0.01, 27.50, 31.50); override.baro = true; }
+function setHdgBug(d) { target.hdgbug = ((cur("hdgbug") + d) % 360 + 360) % 360;      override.hdgbug = true; }
+function setAltSel(d) { target.altsel = Math.max(0, Math.round(cur("altsel")/100)*100 + d * 100); override.altsel = true; }
+
+function knobTurn(u, dir) {
+  const m = u.ui;
+  if (m.mode === "closed") { u.page === "hsi" ? setHdgBug(dir) : setBaro(dir); }
+  else if (m.mode === "menu") { const n = menuItems(u).length; m.idx = (m.idx + dir + n) % n; }
+  else if (m.mode === "edit") { m.edit === "altsel" ? setAltSel(dir) : setHdgBug(dir); }
+}
+function knobPress(u) {
+  const m = u.ui;
+  if (m.mode === "closed") { m.mode = "menu"; m.idx = 1; return; }
+  if (m.mode === "edit")   { m.mode = "menu"; m.edit = null; return; }
+  switch (menuItems(u)[m.idx]) {
+    case "Back":     m.mode = "closed"; break;
+    case "Heading":  m.mode = "edit"; m.edit = "hdgbug"; break;
+    case "Altitude": m.mode = "edit"; m.edit = "altsel"; break;
+    case "Bearing":  u.bearingSrc = (u.bearingSrc + 1) % BEARING.length; break;
+    case "HSI":      u.page = "hsi"; m.mode = "closed"; break;
+    case "PFD":      u.page = "pfd"; m.mode = "closed"; break;
+  }
+}
+
+// Canonical input API — call this from any source (bridge or mouse).
+// unit: a unit id ("TOP_G5"/"BOTTOM_G5") or a numeric index.
+function g5Input(unit, action) {
+  const u = typeof unit === "number" ? units[unit] : unitById[unit];
+  if (!u) return;
+  if (action === "press") knobPress(u);
+  else if (action === "cw") knobTurn(u, +1);
+  else if (action === "ccw") knobTurn(u, -1);
+}
+window.g5Input = g5Input;   // exposed for the bridge / external controllers
+
+// Bridge inputs delivered over the SSE stream as d._inputs = [{unit, action}].
+// No-op until the bridge populates it; keeps the transport in one place.
+function dispatchBridgeInputs(d) {
+  if (Array.isArray(d && d._inputs)) for (const ev of d._inputs) g5Input(ev.unit, ev.action);
+}
+
+// --- mouse source (TESTING ONLY): route by hovered unit ---------------------
+let wheelAccum = 0, wheelUnit = -1;
+cvs.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const i = unitIndexAt(e.clientY);
+  if (i !== wheelUnit) { wheelUnit = i; wheelAccum = 0; }  // reset when crossing units
+  let dy = e.deltaY; if (e.deltaMode === 1) dy *= 16;      // line mode -> px
+  wheelAccum += dy;
+  const STEP = 24;            // scroll delta per knob detent (lower = more responsive)
+  let detents = 0;
+  while (Math.abs(wheelAccum) >= STEP && detents < 4) {    // cap per event to tame momentum
+    const dir = wheelAccum > 0 ? 1 : -1; wheelAccum -= dir * STEP; detents++;
+    g5Input(i, dir > 0 ? "cw" : "ccw");
+  }
+  if (detents === 4) wheelAccum = 0;                       // drop leftover from a big flick
+}, { passive: false });
+cvs.addEventListener("mousedown", (e) => { if (e.button === 0) { e.preventDefault(); g5Input(unitIndexAt(e.clientY), "press"); } });
+cvs.addEventListener("mousemove", (e) => { hoverIdx = unitIndexAt(e.clientY); });
+cvs.addEventListener("mouseleave", () => { hoverIdx = -1; });
+cvs.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function drawUnitMenu(u, reg) {
+  if (u.ui.mode !== "menu") return;
+  const items = menuItems(u), n = items.length;
+  const h = Math.round(clamp(reg.h * 0.16, 44, 84));       // button height
+  const pad = 3, gap = 3, y = reg.y + reg.h - h - pad;
+  const w = (reg.w - pad * 2) / n, r = Math.max(4, Math.round(h * 0.13));
+  ctx.textBaseline = "middle"; ctx.textAlign = "center";
+  for (let i = 0; i < n; i++) {
+    const bx = reg.x + pad + i * w + gap / 2, bw = w - gap;
+    const sel = i === u.ui.idx, label = items[i];
+    // glossy dark button (rounded)
+    const grad = ctx.createLinearGradient(0, y, 0, y + h);
+    grad.addColorStop(0, "#3b3e44"); grad.addColorStop(0.5, "#26282c"); grad.addColorStop(1, "#16181b");
+    rrect(bx, y, bw, h, r); ctx.fillStyle = grad; ctx.fill();
+    // border: subtle dark normally; thin pale gray-yellow when selected
+    rrect(bx, y, bw, h, r);
+    ctx.lineWidth = sel ? 2 : 1; ctx.strokeStyle = sel ? "#cdc79c" : "#0a0b0c"; ctx.stroke();
+    const cx = bx + bw / 2;
+    let val = null;
+    if (label === "Heading") { let v = Math.round(((cur("hdgbug")) % 360 + 360) % 360) || 360; val = String(v).padStart(3, "0") + "°"; }
+    else if (label === "Altitude") val = String(Math.round(cur("altsel")));
+    else if (label === "Bearing")  val = BEARING[u.bearingSrc];
+    if (label === "Back") {
+      ctx.fillStyle = "#cfe0f2"; ctx.font = `600 ${Math.round(h * 0.32)}px ${FONT}`;
+      ctx.fillText("‹ Back", cx, y + h / 2);
+    } else if (val !== null) {
+      ctx.fillStyle = "#fff"; ctx.font = `600 ${Math.round(h * 0.25)}px ${FONT}`;
+      ctx.fillText(label, cx, y + h * 0.33);
+      ctx.fillStyle = "#2fd0e8"; ctx.font = `700 ${Math.round(h * 0.30)}px ${FONT}`;
+      ctx.fillText(val, cx, y + h * 0.71);
+    } else {
+      ctx.fillStyle = "#fff"; ctx.font = `600 ${Math.round(h * 0.30)}px ${FONT}`;
+      ctx.fillText(label, cx, y + h / 2);
+    }
+  }
+}
+
+// Edit dialog: a centered, taller box at the bottom shown while editing a value
+// (heading / altitude / course) — figs 2-12/2-13/2-27/2-28.
+const EDIT_TITLE = { hdgbug: "Select Heading", altsel: "Select Altitude", crs: "Localizer Course", obs: "OBS Course" };
+function drawEditDialog(u, reg) {
+  if (u.ui.mode !== "edit") return;
+  const f = u.ui.edit;
+  let val;
+  if (f === "altsel") val = String(Math.round(cur("altsel")));
+  else { let v = Math.round(((cur(f === "hdgbug" ? "hdgbug" : f)) % 360 + 360) % 360) || 360; val = String(v).padStart(3, "0") + "°"; }
+  const h = Math.round(clamp(reg.h * 0.22, 64, 130));
+  const w = Math.round(clamp(reg.w * 0.48, 150, reg.w - 16));
+  const x = reg.x + (reg.w - w) / 2, y = reg.y + reg.h - h - 5;
+  const r = Math.max(6, Math.round(h * 0.12));
+  const grad = ctx.createLinearGradient(0, y, 0, y + h);
+  grad.addColorStop(0, "#23262b"); grad.addColorStop(1, "#0c0e10");
+  rrect(x, y, w, h, r); ctx.fillStyle = grad; ctx.fill();
+  rrect(x, y, w, h, r); ctx.lineWidth = 2; ctx.strokeStyle = "#5c6066"; ctx.stroke();
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff"; ctx.font = `600 ${Math.round(h * 0.23)}px ${FONT}`;
+  ctx.fillText(EDIT_TITLE[f] || "Select", x + w / 2, y + h * 0.31);
+  ctx.fillStyle = "#2fd0e8"; ctx.font = `700 ${Math.round(h * 0.42)}px ${FONT}`;
+  ctx.fillText(val, x + w / 2, y + h * 0.70);
+}
+
+// Testing aid: outline the unit currently under the mouse (never shows on a
+// touch device since there is no mousemove).
+function drawHover(reg) {
+  ctx.strokeStyle = "rgba(25,211,255,0.45)"; ctx.lineWidth = 2;
+  ctx.strokeRect(reg.x + 1, reg.y + 1, reg.w - 2, reg.h - 2);
+}
+
+// ---- wake lock + start -----------------------------------------------------
+let wakeLock = null;
+async function keepAwake() { try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch(_){} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+function start() {
+  document.getElementById("tap").style.display = "none";
+  resize(); keepAwake(); connect();
+  // if (cvs.requestFullscreen) cvs.requestFullscreen().catch(()=>{});  // disabled for now
+  requestAnimationFrame(frame);
+}
+document.getElementById("tap").addEventListener("click", start);
+if (window.navigator.standalone === true) start();
+if (/[?&]auto/.test(location.search)) start();
+</script>
+</body>
+</html>
