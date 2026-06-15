@@ -119,16 +119,37 @@ def _write_dataref(key: str, xp) -> str | None:
     return DATAREFS.get(key)
 
 
+HOLD_SEC = 3.0
+_g5_held: dict = {}   # button -> [unit, press_monotonic, hold_fired]
+
+
 def _route_g5(ev) -> None:
-    """Translate an IFR-1 decoder event into a G5 knob action (duck-typed)."""
+    """Translate an IFR-1 decoder event into a G5 knob action (duck-typed).
+    Buttons defer: a quick press fires on RELEASE; a ≥3 s hold fires `hold`
+    (see _g5_tick) and suppresses the press."""
     if hasattr(ev, "ring"):                        # EncoderEvent
         unit = G5_ENC_UNIT.get(ev.ring)
         if unit:
             _push_g5_input(unit, "cw" if ev.direction > 0 else "ccw")
-    elif hasattr(ev, "button") and getattr(ev, "edge", None) == "press":
+    elif hasattr(ev, "button"):                    # ButtonEvent
         unit = G5_BTN_UNIT.get(ev.button)
-        if unit:
-            _push_g5_input(unit, "press")
+        if not unit:
+            return
+        if ev.edge == "press":
+            _g5_held[ev.button] = [unit, time.monotonic(), False]
+        elif ev.edge == "release":
+            st = _g5_held.pop(ev.button, None)
+            if st and not st[2]:                   # released before the hold threshold
+                _push_g5_input(unit, "press")
+
+
+def _g5_tick() -> None:
+    """Fire `hold` for any G5 button held past HOLD_SEC (call each poll)."""
+    now = time.monotonic()
+    for st in _g5_held.values():
+        if not st[2] and (now - st[1]) >= HOLD_SEC:
+            st[2] = True
+            _push_g5_input(st[0], "hold")
 
 
 def _mark_rx(_path: str, _value: float) -> None:
@@ -216,6 +237,7 @@ def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
                     _route_g5(ev)
                 elif bridge is not None:
                     bridge.handle_event(ev)
+        _g5_tick()   # emit `hold` for any G5 button held ≥ HOLD_SEC
         if bridge is not None:
             nb = bridge.compute_led_byte()
             if nb != led_byte:

@@ -12,17 +12,17 @@ UDP client and streams data to the browser over Server-Sent Events.
 ## What it renders
 
 - **PFD page** — attitude (pitch ladder, roll scale w/ white pointer, slip/skid,
-  yellow aircraft + chevron), airspeed tape with color "barber pole" strip +
-  magenta trend vector + Vne-red readout + Vspeed tags, altimeter with
-  selected-altitude box/bug + baro box, VSI, turn-rate indicator, CDI, vertical-
-  deviation (glideslope/glidepath) diamond, and a heading/track tape (3-digit
-  labels, 1°/5° ticks clamped to the bottom, current-heading lubber box with a
-  triangle tab + interlocking heading bug, magenta track triangle). Fixed-size
-  cyan/magenta corner boxes (selected altitude, baro, ground speed).
-- **HSI page** — rotating compass card, magenta course needle + CDI + TO/FROM,
-  current-track triangle + dashed line, heading bug, light-blue bearing pointer,
-  center annunciations (nav source, GPS CDI scale, + MSG/OBS/GPSS stubs), vertical-
-  deviation diamond, and edge-flush corner boxes (DIST, GS, selected heading).
+  yellow aircraft symbol), airspeed tape, altimeter with selected-altitude box/bug
+  + **altitude alerting flash** + baro box, VSI, turn-rate indicator, CDI
+  (source-colored magenta/green), heading/track tape with current-heading lubber
+  box + interlocking heading bug, a **boxed battery indicator**, and a transient
+  **HDG** selected-heading pop-up that appears when the heading bug moves.
+- **HSI page** — rotating compass card, course needle + CDI + TO/FROM
+  (**source-colored** by nav source), current-track triangle, heading bug,
+  bearing pointer, and **data-driven center annunciations** (nav source GPS/VLOC,
+  GPS CDI scale ENR/TERM/APR…, MSG/OBS/GPSS), plus edge-flush corner boxes
+  (DIST, GS, selected heading). The menu is **contextual** — Course/OBS appear
+  with the active nav source.
 
 Display data arrives at ~30 Hz and is smoothed at the display end so motion
 stays fluid. The `--demo` server animates attitude, speeds, and the CDI/bearing
@@ -43,21 +43,43 @@ The real G5 has two operable inputs (power is ignored here): the knob **turn**
 and the knob **press**. All input flows through one source-agnostic API:
 
 ```js
-g5Input(unitId, action)   // unitId: "TOP_G5" | "BOTTOM_G5"; action: "cw" | "ccw" | "press"
+g5Input(unitId, action)   // unitId: "TOP_G5" | "BOTTOM_G5"; action: "cw" | "ccw" | "press" | "hold"
 ```
 
-Two sources feed it:
+Knob behavior follows the spec: closed → turning adjusts baro (PFD) / heading bug
+(HSI), pressing opens the menu; in the menu, turning moves the cursor and pressing
+selects; selecting Heading/Altitude/Course opens a centered slide-up edit dialog.
+A **press-and-hold (≥3 s)** on the HSI syncs the heading bug to the current
+heading (or, while editing Altitude, syncs selected altitude). Menus and dialogs
+**auto-close after 10 s** of inactivity.
 
-- **Hardware controller via the ifr-1 bridge** (production) — the bridge maps a
-  physical knob to a unit and forwards events. *(Transport is an open question;
-  see `G5_BUILD.md`.)*
-- **Mouse** (testing only) — scroll wheel = turn, button 1 = press, routed to the
-  unit the cursor is hovering over (the hovered unit gets a faint outline).
+Three sources feed `g5Input`:
 
-Knob behavior follows the spec: when no menu is open, turning adjusts the
-barometric setting (PFD) or the heading/track bug (HSI); pressing opens the menu;
-in the menu, turning moves the cursor and pressing selects; selecting Heading /
-Altitude opens a centered edit dialog.
+- **IFR-1 hardware** (production) — the panel's mode selector reserves **FMS2 as
+  "G5 mode"**: there, the outer ring drives PFD turn, inner ring HSI turn, MENU =
+  PFD press, CRSR = HSI press (held ≥3 s = hold). Other modes drive the aircraft
+  via the `.mcc`. Run with `--ifr1`; see **[`README_IFR1.md`](README_IFR1.md)**.
+- **Mouse** (desktop testing) — wheel = turn, click = press, hold ≥3 s = hold,
+  routed to the unit under the cursor (which gets a faint outline). **Touch taps
+  never operate the avionics** — on a phone a tap opens the display-fit menu.
+- **Keyboard** (desktop testing) — Arrow ↑/↓ = turn, Enter = press / hold.
+
+Knob-set values (baro / heading bug / selected altitude / course) are **written
+back to X-Plane** so the sim follows the simulated knob (POST `/write` →
+`set_dataref`; coalesced, no-op in `--demo`).
+
+## Phone display-fit menu
+
+On a phone, a **tap** opens a config overlay for sizing the image to clear the
+device's bezels/notches: a box with up/down arrows on each edge that grow/shrink
+the drawable viewport, OK in the center. Settings persist in `localStorage`. The
+splash screen explains it. (Tap is touch-only, so desktop testing is unaffected.)
+
+## Debug overlay
+
+Press **`G`** (desktop) to toggle a live readout of the raw incoming stream —
+`live`/age, per-unit menu state, decoded `navsrc`/scale/to-from, active knob
+overrides, and every data field — for eyeballing G5-vs-sim agreement.
 
 ## Developer mode (visual tuning)
 
@@ -88,11 +110,17 @@ python server.py --demo
 
 # Pick a port (default 8080):
 python server.py --demo --http-port 9090
+
+# Drive it from the IFR-1 panel (FMS2 = G5 mode) + aircraft via the .mcc:
+python server.py --ifr1 --mcc ../XP_C172.mcc --xplane-host 192.168.1.50
 ```
 
 It prints the URL(s) to open, e.g. `http://192.168.1.42:8080/`. Make sure
 X-Plane's network UDP output is enabled (Settings → Network), same as for the
 panel bridge. Open the URL in a browser and click once to start.
+
+For the IFR-1 wiring (FMS2 = G5 mode, control mapping, knob write-back, single
+HID owner), see **[`README_IFR1.md`](README_IFR1.md)**.
 
 > The `server.py` reads `g5.html` fresh on every request, so a browser refresh
 > picks up edits without restarting the server.
@@ -102,10 +130,11 @@ panel bridge. Open the URL in a browser and click once to start.
 | Path | What |
 |------|------|
 | `g5.html` | The unit — all rendering + input handling (single self-contained file). |
-| `server.py` | X-Plane UDP → SSE bridge; `--demo` for synthetic data. |
+| `server.py` | X-Plane UDP → SSE bridge; knob write-back; `--demo`; `--ifr1` HID. |
+| `README_IFR1.md` | IFR-1 ↔ G5 ↔ X-Plane wiring: FMS2 G5 mode, mapping, write-back. |
 | `docs/` | G5 spec distilled from the pilot's guide (per-instrument reference). |
 | `docs/images/` | Cropped G5 screen references, one folder per figure. |
-| `G5_BUILD.md` | Build notes: spec↔implementation conformance, plan, open questions. |
+| `G5_BUILD.md` | Build notes: spec↔implementation conformance, confirmed datarefs. |
 | `pilots_guide.pdf` | Source: Garmin G5 Pilot's Guide for Certified Aircraft. |
 
 ## Tuning / extending
