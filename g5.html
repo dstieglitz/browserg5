@@ -41,8 +41,8 @@
 const FONT = "-apple-system, SF Pro Display, system-ui, Roboto, sans-serif";
 
 // ---- live state (target = from sim, disp = smoothed for display) ----------
-const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, live:false };
-const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0 };
+const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, fdpitch:0, fdroll:0, apmode:0, live:false };
+const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, fdpitch:0, fdroll:0 };
 let lastData = 0;
 
 // Airspeed color ranges + Vspeed bugs (aircraft-specific; defaults ~ light single).
@@ -89,11 +89,8 @@ const rad = (d) => d * Math.PI / 180;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function approach(c, t, dt, r) { return c + (t - c) * Math.min(1, dt * r); }
 function approachAngle(c, t, dt, r) { let d = ((t - c + 540) % 360) - 180; return c + d * Math.min(1, dt * r); }
-function rrect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+function rrect(x, y, w, h, r) {   // r ignored — square corners
+  ctx.beginPath(); ctx.rect(x, y, w, h);
 }
 
 // Fixed-size value box (selected altitude, baro, ground speed). FIXED pixel
@@ -104,11 +101,14 @@ const STYLE_DEFAULTS = {
   asiBoxH: 24, asiBoxFS: 17,   // airspeed readout pointer (width = speed-tape width)
   altBoxH: 25, altBoxFS: 17,   // altitude readout pointer (width = altimeter width)
   baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
-  gsBoxH: 24, gsFS: 16,        // ground speed box (PFD)
+  gsBoxH: 24, gsFS: 16, gsLabFS: 11,   // ground speed box (PFD): value font + "GS" label font
   altSelBugH: 28,              // selected-altitude tape bug height
   altTapeFS: 17,               // altimeter tape numerals
   altTapeTickMaj: 9,           // altimeter 100-ft tick length
   altTapeTickMin: 5,           // altimeter 20-ft tick length
+  asiTapeFS: 17,               // airspeed tape numerals
+  asiTapeTickMaj: 7,           // airspeed 10-kt tick length
+  asiTapeTickMin: 4,           // airspeed 5-kt tick length
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
   htBugWPct: 76,       // PFD heading bug width (% of box width)
@@ -123,8 +123,15 @@ const STYLE_DEFAULTS = {
   hsiGsW: 78,          // HSI GS box width
   hsiHdgBoxH: 23,      // HSI selected-heading box height
   hsiHdgFS: 17,        // HSI selected-heading digits
-  hsiDataFS: 16,       // HSI DIST/GS number font
-  hsiLabFS: 10,        // HSI DIST/GS label font
+  distLabFS: 10, distFS: 16,   // HSI DIST box: label + value fonts
+  gsKtLabFS: 10, gsKtFS: 16,   // HSI GS box: label + value fonts
+  cdiW: 146, cdiH: 16, cdiDotR: 4, cdiDiaR: 9,   // PFD lateral deviation (LOC/CDI)
+  vdiW: 15, vdiH: 150, vdiDotR: 4, vdiDiaR: 8,   // glideslope/glidepath deviation (PFD + HSI)
+  cmdSpan: 120, cmdDroop: 24, cmdThick: 9,       // flight-director command bars (single cue)
+  acDeltaW: 62, acDeltaH: 16, acDeltaT: 29,      // aircraft symbol: center delta (half-width, height, inner notch half-width)
+  acMarkLen: 41, acMarkH: 7, acMarkGap: 86, acMarkArrow: 7,  // level markers: length, total height, gap, inner arrowhead length
+  slipR: 11, slipLineH: 25, slipGap: 15,         // slip/skid: ball radius, reference-line height, gap from center
+  trnStdX: 36, trnBarTh: 9, trnTickH: 9,         // turn rate: std-rate tick offset, trend-bar thickness, tick height
 };
 const STYLE = Object.assign({}, STYLE_DEFAULTS);
 try { Object.assign(STYLE, JSON.parse(localStorage.getItem("g5style") || "{}")); } catch (_) {}
@@ -196,6 +203,48 @@ function devHighlight(keys) {
   });
 }
 
+// Boxed deviation scale (CDI / glideslope / glidepath): rounded translucent-grey
+// box + grey border, a center reference line, larger HOLLOW dots at ±1/±2, and a
+// filled diamond. vertical=false → horizontal (lateral); true → vertical.
+function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor) {
+  const bx = cx - w/2, by = cy - h/2;
+  // inner elements respect the box: dots/diamond clamped to the cross dimension,
+  // dot spacing derived from the scale-axis length so the scale fills the box.
+  const cross = vertical ? w : h, axis = vertical ? h : w;
+  const r = Math.min(dotR, cross/2 - 1.5);
+  const dr = Math.min(diaR, cross/2 - 1);
+  const gap = (axis/2 - r - 3) / 2.5;
+  ctx.fillStyle = "rgba(30,32,38,0.62)"; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1;
+  rrect(bx, by, w, h, 4); ctx.fill(); ctx.stroke();
+  // hollow dots at ±1, ±2
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+  for (const d of [-2, -1, 1, 2]) {
+    ctx.beginPath();
+    if (vertical) ctx.arc(cx, cy + d * gap, r, 0, 7); else ctx.arc(cx + d * gap, cy, r, 0, 7);
+    ctx.stroke();
+  }
+  const off = clamp(dev, -2.5, 2.5) * gap;
+  if (vertical) {
+    // glideslope: horizontal center reference (spans box width) + diamond moving vertically
+    ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(bx, cy); ctx.lineTo(bx + w, cy); ctx.stroke();
+    const dyc = cy - off;
+    ctx.fillStyle = diaColor; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, dyc - dr); ctx.lineTo(cx + dr, dyc); ctx.lineTo(cx, dyc + dr); ctx.lineTo(cx - dr, dyc);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else {
+    // localizer: fixed VERTICAL center reference line (spans box height) + diamond moving left/right
+    ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by + h); ctx.stroke();
+    const xx = cx + off;
+    ctx.fillStyle = diaColor; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xx, cy - dr); ctx.lineTo(xx + dr, cy); ctx.lineTo(xx, cy + dr); ctx.lineTo(xx - dr, cy);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+}
+
 // ---- layout ----------------------------------------------------------------
 function L() {
   const headH = Math.round(clamp(H * 0.055, 34, 52));
@@ -205,7 +254,7 @@ function L() {
   return {
     headH, botH, aTop, aBot, aH,
     cx: W / 2,
-    cy: aTop + aH * 0.45,
+    cy: aTop + aH / 2,                  // = midY: aircraft symbol, readouts, VSI, glideslope all share the center line
     ppd: aH / 42,                       // pitch px/deg (~±21° visible)
     spdW: clamp(W * 0.15, 50, 78),
     altW: clamp(W * 0.18, 62, 92),
@@ -257,6 +306,7 @@ function attitude(g) {
 
   rollScale(g);
   slipBall(g);
+  // commandBars(g);   // FD (magenta, moving) — deferred
   aircraft(g);
 }
 
@@ -287,87 +337,139 @@ function rollScale(g) {
   ctx.restore();
 }
 
+// Garmin fixed aircraft symbol (fig 2-4): a filled yellow center delta (caret)
+// flanked by side level markers that taper to a point (arrow) toward center.
+// Black-outlined; all dimensions are dev-tunable. Fixed — never moves.
 function aircraft(g) {
-  const { cx, cy, aH } = g;
-  const s = aH * 0.075;            // wing length
+  const { cx, cy } = g;
   ctx.save(); ctx.translate(cx, cy);
-  const wings = () => {
+  ctx.lineJoin = "miter"; ctx.fillStyle = "#ffd21a"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5;
+  // center symbol — two elongated triangles meeting at a point on the level
+  // line (y=0); the bodies fan down below. acDeltaT = inner notch half-width.
+  const w = STYLE.acDeltaW, h = STYLE.acDeltaH, gp = STYLE.acDeltaT;
+  for (const sgn of [-1, 1]) {
     ctx.beginPath();
-    ctx.moveTo(-s*2.1, 0); ctx.lineTo(-s, 0); ctx.lineTo(-s, s*0.42);
-    ctx.moveTo( s*2.1, 0); ctx.lineTo( s, 0); ctx.lineTo( s, s*0.42);
-    ctx.stroke();
-  };
-  const chevron = () => {          // center delta pointing up (spec fig 2-4)
+    ctx.moveTo(0, 0);           // shared point on the level line
+    ctx.lineTo(sgn * w, h);     // outer-bottom (wing tip)
+    ctx.lineTo(sgn * gp, h);    // inner-bottom (notch)
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  // side level markers — a rectangular bar with a small triangle at the inner
+  // end pointing toward center
+  const len = STYLE.acMarkLen, hgt = STYLE.acMarkH, gap = STYLE.acMarkGap, ah = STYLE.acMarkArrow;
+  for (const sgn of [-1, 1]) {
+    const xin = sgn * gap, xb = sgn * (gap + ah), xout = sgn * (gap + len);
     ctx.beginPath();
-    ctx.moveTo(-s*0.6, s*0.34); ctx.lineTo(0, -s*0.28); ctx.lineTo(s*0.6, s*0.34);
-    ctx.stroke();
-  };
-  ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.strokeStyle = "#000"; ctx.lineWidth = 7; wings(); chevron();
-  ctx.strokeStyle = "#ffd21a"; ctx.lineWidth = 4; wings(); chevron();
+    ctx.moveTo(xin, 0);            // inner tip (point toward center)
+    ctx.lineTo(xb, -hgt / 2);      // triangle base, top (full height)
+    ctx.lineTo(xout, -hgt / 2);    // outer top
+    ctx.lineTo(xout, hgt / 2);     // outer bottom
+    ctx.lineTo(xb, hgt / 2);       // triangle base, bottom
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
   ctx.restore();
+  const reach = STYLE.acMarkGap + STYLE.acMarkLen;
+  hit(cx - reach, cy - STYLE.acDeltaH - 2, 2 * reach, STYLE.acDeltaH + STYLE.acMarkH + 4,
+      ["acDeltaW", "acDeltaH", "acDeltaT", "acMarkLen", "acMarkH", "acMarkGap", "acMarkArrow"]);
+}
+
+// Single-cue flight-director command bars (fig 3-6). A wide magenta chevron with
+// a yellow lower accent that the pilot flies the aircraft symbol into. Hollow
+// (outline) when hand-flying with FD only; solid when the autopilot is engaged.
+function commandBars(g) {
+  if (target.apmode < 0.5) return;                 // FD off
+  const { cx, cy, ppd } = g;
+  const solid = target.apmode >= 1.5;              // AP engaged
+  const span = STYLE.cmdSpan, droop = STYLE.cmdDroop, thick = STYLE.cmdThick;
+  const pErr = clamp(disp.fdpitch - disp.pitch, -12, 12);
+  const rErr = clamp(disp.fdroll - disp.roll, -30, 30);
+  const cyc = cy - pErr * ppd;
+  ctx.save();
+  ctx.translate(cx, cyc); ctx.rotate(rad(rErr));
+  ctx.lineJoin = "round";
+  for (const s of [-1, 1]) {
+    // wing body (apex at center top → wing tip, with thickness)
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(s*span/2, droop); ctx.lineTo(s*span/2, droop + thick); ctx.lineTo(0, thick);
+    ctx.closePath();
+    if (solid) { ctx.fillStyle = "#a657cf"; ctx.fill(); ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.stroke(); }
+    else { ctx.fillStyle = "rgba(0,0,0,0.30)"; ctx.fill(); ctx.strokeStyle = "#a657cf"; ctx.lineWidth = 2; ctx.stroke(); }
+    // yellow lower accent stripe
+    ctx.beginPath();
+    ctx.moveTo(0, thick*0.5); ctx.lineTo(s*span/2, droop + thick*0.5);
+    ctx.lineTo(s*span/2, droop + thick); ctx.lineTo(0, thick);
+    ctx.closePath(); ctx.fillStyle = "#ffd21a"; ctx.fill();
+  }
+  ctx.restore();
+  hit(cx - span/2, cyc - 2, span, droop + thick + 4, ["cmdSpan", "cmdDroop", "cmdThick"]);
 }
 
 // Turn rate indicator — bottom of the PFD. White ticks at standard rate (3°/s);
 // magenta trend bar shows current rate (spec §2.4, fig 2-11).
 function turnRate(g) {
   const { cx, aBot } = g, y = aBot - 4;
-  const pps = (W * 0.085) / 3, stdX = 3 * pps;
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.lineCap = "butt";
+  const stdX = STYLE.trnStdX, pps = stdX / 3, tickH = STYLE.trnTickH, barTh = STYLE.trnBarTh;
+  // thin, soft dark line across the top of the indicator
+  ctx.strokeStyle = "rgba(0,0,0,0.45)"; ctx.lineWidth = 1; ctx.lineCap = "butt";
+  ctx.beginPath(); ctx.moveTo(cx - stdX * 1.7, y - tickH); ctx.lineTo(cx + stdX * 1.7, y - tickH); ctx.stroke();
+  // white std-rate ticks
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(cx - stdX, y - 9); ctx.lineTo(cx - stdX, y);
-  ctx.moveTo(cx + stdX, y - 9); ctx.lineTo(cx + stdX, y);
+  ctx.moveTo(cx - stdX, y - tickH); ctx.lineTo(cx - stdX, y);
+  ctx.moveTo(cx + stdX, y - tickH); ctx.lineTo(cx + stdX, y);
   ctx.stroke();
-  const tx = cx + clamp(disp.turn, -4.5, 4.5) * pps;
-  ctx.strokeStyle = "#d24fc8"; ctx.lineWidth = 5; ctx.lineCap = "round";
-  ctx.beginPath(); ctx.moveTo(cx, y - 4); ctx.lineTo(tx, y - 4); ctx.stroke();
+  // magenta trend bar with a thin dark border (dark underlay)
+  const tx = cx + clamp(disp.turn, -4.5, 4.5) * pps, by = y - 4;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = barTh + 2;
+  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(tx, by); ctx.stroke();
+  ctx.strokeStyle = "#d24fc8"; ctx.lineWidth = barTh;
+  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(tx, by); ctx.stroke();
+  hit(cx - stdX * 1.7, y - tickH - 3, stdX * 3.4, tickH + 8, ["trnStdX", "trnBarTh", "trnTickH"]);
 }
 
 // Course Deviation Indicator on the PFD — horizontal scale below the slip/skid
 // (spec §2.3.1, fig 2-21). Magenta diamond = GPS source.
 function pfdCDI(g) {
-  const { cx, aBot, aH } = g, y = aBot - aH * 0.055, gap = W * 0.05;
-  ctx.fillStyle = "#fff";
-  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(cx + d * gap, y, 2.6, 0, 7); ctx.fill(); }
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, y, 3, 0, 7); ctx.stroke();
-  const dx = cx + clamp(disp.cdi, -2.5, 2.5) * gap, ds = 7;
-  ctx.fillStyle = "#d24fc8"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(dx, y - ds); ctx.lineTo(dx + ds, y); ctx.lineTo(dx, y + ds); ctx.lineTo(dx - ds, y); ctx.closePath();
-  ctx.fill(); ctx.stroke();
+  const { cx, aBot, aH } = g, y = aBot - aH * 0.12 - 22;
+  devScale(cx, y, STYLE.cdiW, STYLE.cdiH, false, disp.cdi, STYLE.cdiDotR, STYLE.cdiDiaR, "#d24fc8");
+  hit(cx - STYLE.cdiW/2, y - STYLE.cdiH/2, STYLE.cdiW, STYLE.cdiH, ["cdiW", "cdiH", "cdiDotR", "cdiDiaR"]);
 }
 
 // Vertical deviation (glideslope/glidepath) diamond left of the altimeter
 // (spec §4.2, figs 2-23/2-25). Green = ILS; shown only when guidance is valid.
 function pfdVDI(g) {
   if (target.vshow < 0.5) return;
-  const xv = (W - g.altW - g.vsiW) - 14, midY = g.midY, dotGap = g.aH * 0.15;
-  ctx.fillStyle = "#fff";
-  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(xv, midY + d * dotGap, 2.4, 0, 7); ctx.fill(); }
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xv - 7, midY); ctx.lineTo(xv + 7, midY); ctx.stroke();
-  const yy = midY - clamp(disp.vdef, -2.5, 2.5) * dotGap, ds = 7;
-  ctx.fillStyle = "#16c61a"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(xv, yy - ds); ctx.lineTo(xv + ds, yy); ctx.lineTo(xv, yy + ds); ctx.lineTo(xv - ds, yy); ctx.closePath();
-  ctx.fill(); ctx.stroke();
+  const xv = (W - g.altW - g.vsiW) - 14, midY = g.midY;
+  devScale(xv, midY, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, "#16c61a");
+  hit(xv - STYLE.vdiW/2, midY - STYLE.vdiH/2, STYLE.vdiW, STYLE.vdiH, ["vdiW", "vdiH", "vdiDotR", "vdiDiaR"]);
 }
 
+// slip/skid: a white ball between two vertical reference lines (|O|), below the
+// loc bar. The ball slides left/right with slip.
 function slipBall(g) {
-  // inclinometer at bottom-center of attitude
   const { cx, aBot, aH } = g;
-  const y = aBot - aH * 0.12, w = 13, gap = 6;
-  const off = clamp(disp.slip * 7, -22, 22);
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.moveTo(cx-gap-w, y-9); ctx.lineTo(cx-gap, y-9);
-  ctx.moveTo(cx+gap, y-9); ctx.lineTo(cx+gap+w, y-9); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx-gap, y-9); ctx.lineTo(cx-gap, y+5);
-  ctx.moveTo(cx+gap, y-9); ctx.lineTo(cx+gap, y+5); ctx.stroke();
+  const y = aBot - aH * 0.045 - 18;
+  const ballR = STYLE.slipR, lh = STYLE.slipLineH, gap = STYLE.slipGap;
+  const off = clamp(disp.slip * 7, -(gap + ballR + 4), gap + ballR + 4);
+  // vertical reference lines: white with a thin black border (black underlay)
+  ctx.lineCap = "butt";
+  const lines = () => { ctx.beginPath();
+    ctx.moveTo(cx - gap, y - lh/2); ctx.lineTo(cx - gap, y + lh/2);
+    ctx.moveTo(cx + gap, y - lh/2); ctx.lineTo(cx + gap, y + lh/2);
+    ctx.stroke(); };
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 4.5; lines();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; lines();
   ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(cx+off, y-2, 5.2, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx + off, y, ballR, 0, 7); ctx.fill(); ctx.stroke();
+  hit(cx - gap - ballR - 4, y - lh/2 - 2, 2*(gap + ballR + 4), lh + 4, ["slipR", "slipLineH", "slipGap"]);
 }
 
 // ---- tapes -----------------------------------------------------------------
 function speedTape(g) {
   const x = 0, w = g.spdW, top = g.aTop, h = g.aH, midY = g.midY;
   ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
+  hit(x, top, w, h, ["asiTapeFS", "asiTapeTickMaj", "asiTapeTickMin"]);
   ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
   const v = disp.ias, span = (h/2)/g.pxKt;
   const sy = (s) => midY - (s - v) * g.pxKt;
@@ -388,13 +490,14 @@ function speedTape(g) {
 
   // --- tick marks + labels --------------------------------------------------
   ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
-  ctx.font = `600 ${Math.round(g.aH*0.026)}px ${FONT}`;
+  ctx.font = `600 ${STYLE.asiTapeFS}px ${FONT}`;
   ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  const tMaj = STYLE.asiTapeTickMaj, tMin = STYLE.asiTapeTickMin;
   for (let s = Math.ceil((v-span)/5)*5; s <= v+span; s += 5) {
     if (s < 0) continue;
     const y = sy(s);
-    if (s % 10 === 0) { ctx.beginPath(); ctx.moveTo(inX-2,y); ctx.lineTo(inX-7,y); ctx.stroke(); ctx.fillText(s, inX-9, y); }
-    else { ctx.beginPath(); ctx.moveTo(inX-2,y); ctx.lineTo(inX-5,y); ctx.stroke(); }
+    if (s % 10 === 0) { ctx.beginPath(); ctx.moveTo(inX,y); ctx.lineTo(inX-tMaj,y); ctx.stroke(); ctx.fillText(s, inX-tMaj-3, y); }
+    else { ctx.beginPath(); ctx.moveTo(inX,y); ctx.lineTo(inX-tMin,y); ctx.stroke(); }
   }
 
   // --- airspeed trend vector (magenta, predicted 6 s) -----------------------
@@ -418,9 +521,14 @@ function speedTape(g) {
   readout(x, midY, w, Math.round(v).toString(), "right", STYLE.asiBoxH, STYLE.asiBoxFS,
           overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
   hit(x, midY - STYLE.asiBoxH/2, w, STYLE.asiBoxH, ["asiBoxH", "asiBoxFS"]);
-  // ground speed box at the bottom of the speed tape (magenta), flush to the bottom
-  valueBox(x, H - STYLE.gsBoxH, w, "#e94fd0", "GS " + Math.round(disp.gs), STYLE.gsBoxH, STYLE.gsFS);
-  hit(x, H - STYLE.gsBoxH, w, STYLE.gsBoxH, ["gsBoxH", "gsFS"]);
+  // ground speed box (magenta), flush to the bottom — small "GS" label + value
+  const gy = H - STYLE.gsBoxH, gh = STYLE.gsBoxH;
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#e94fd0"; ctx.lineWidth = 2;
+  rrect(x, gy, w, gh, 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#e94fd0"; ctx.textBaseline = "middle";
+  ctx.textAlign = "left";  ctx.font = `700 ${STYLE.gsLabFS}px ${FONT}`; ctx.fillText("GS", x + 5, gy + gh/2 + 1);
+  ctx.textAlign = "right"; ctx.font = `700 ${STYLE.gsFS}px ${FONT}`;    ctx.fillText(Math.round(disp.gs).toString(), x + w - 5, gy + gh/2 + 1);
+  hit(x, gy, w, gh, ["gsBoxH", "gsFS", "gsLabFS"]);
 }
 
 function altTape(g) {
@@ -601,7 +709,7 @@ const ROSE_LABELS = {0:"N",30:"3",60:"6",90:"E",120:"12",150:"15",180:"S",210:"2
 const MAG = "#d24fc8", CYAN = "#19d3ff", GRN = "#16c61a";
 // HSI nav annunciations. navsrc/cdiscale are always shown; msg/obs/gpss are
 // capability stubs (off until wired to nav data via server/bridge).
-const HSI = { navsrc: "GPS", navcolor: MAG, cdiscale: "ENR", msg: "", obs: false, gpss: false };
+const HSI = { navsrc: "GPS", navcolor: MAG, cdiscale: "ENR", msg: "MSG", obs: true, gpss: false };
 
 function drawHSI(unit) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
@@ -754,23 +862,17 @@ function hsiAnnun(cx, cy, R) {
 // Vertical deviation diamond to the right of the rose (figs 2-24/2-26).
 function hsiVDI(cx, cy, R) {
   if (target.vshow < 0.5) return;
-  const xv = Math.min(cx + R + 16, W - 12), dotGap = R * 0.22;
-  ctx.fillStyle = "#fff";
-  for (const d of [-2, -1, 1, 2]) { ctx.beginPath(); ctx.arc(xv, cy + d * dotGap, 2.4, 0, 7); ctx.fill(); }
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xv - 7, cy); ctx.lineTo(xv + 7, cy); ctx.stroke();
-  const yy = cy - clamp(disp.vdef, -2.5, 2.5) * dotGap, ds = 7;
-  ctx.fillStyle = GRN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(xv, yy - ds); ctx.lineTo(xv + ds, yy); ctx.lineTo(xv, yy + ds); ctx.lineTo(xv - ds, yy); ctx.closePath();
-  ctx.fill(); ctx.stroke();
+  const xv = Math.min(cx + R + 4 + STYLE.vdiW/2, W - 6 - STYLE.vdiW/2);
+  devScale(xv, cy, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, "#16c61a");
+  hit(xv - STYLE.vdiW/2, cy - STYLE.vdiH/2, STYLE.vdiW, STYLE.vdiH, ["vdiW", "vdiH", "vdiDotR", "vdiDiaR"]);
 }
 
 function hsiReadouts(cx, cy, R) {
-  const labFS = STYLE.hsiLabFS, numFS = STYLE.hsiDataFS;
   const BW = STYLE.hsiBoxW;               // shared box width (DIST, heading)
-  // grey-bordered box with the label INSIDE (white, top) over a magenta number.
-  // anchorX/anchorY is the corner; corner string picks which corner to clamp to.
-  const dataBox = (label, value, anchorX, anchorY, corner, w, keys) => {
-    const h = labFS + numFS + 9;
+  // grey-bordered box with the label INSIDE (white, top) over a magenta number;
+  // label + value fonts are independent per box.
+  const dataBox = (label, value, anchorX, anchorY, corner, w, keys, labFS, valFS) => {
+    const h = labFS + valFS + 9;
     const x = corner.includes("right") ? anchorX - w : anchorX;
     const y = corner.includes("bottom") ? anchorY - h : anchorY;
     ctx.fillStyle = "#000"; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1;
@@ -779,11 +881,13 @@ function hsiReadouts(cx, cy, R) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillStyle = "#e8eaed"; ctx.font = `600 ${labFS}px ${FONT}`;
     ctx.fillText(label, x + w/2, y + labFS*0.5 + 4);
-    ctx.fillStyle = MAG; ctx.font = `700 ${numFS}px ${FONT}`;
-    ctx.fillText(value, x + w/2, y + h - numFS*0.5 - 4);
+    ctx.fillStyle = MAG; ctx.font = `700 ${valFS}px ${FONT}`;
+    ctx.fillText(value, x + w/2, y + h - valFS*0.5 - 4);
   };
-  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW, ["hsiBoxW", "hsiDataFS", "hsiLabFS"]);
-  dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", STYLE.hsiGsW, ["hsiGsW", "hsiDataFS", "hsiLabFS"]);
+  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW,
+          ["hsiBoxW", "distFS", "distLabFS"], STYLE.distLabFS, STYLE.distFS);
+  dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", STYLE.hsiGsW,
+          ["hsiGsW", "gsKtFS", "gsKtLabFS"], STYLE.gsKtLabFS, STYLE.gsKtFS);
 
   // selected heading (bottom-right) — wide, short cyan box; thin bug icon + 060°,
   // only a few px between the number and the border
@@ -828,11 +932,14 @@ function frame(now) {
   asiTrend = approach(asiTrend, clamp((target.ias - prevIas) / Math.max(dt, 1e-3) * 6, -40, 40), dt, 2);
   prevIas = target.ias;
   disp.vdef  = approach(disp.vdef,  target.vdef,  dt, 6);
+  disp.fdpitch = approach(disp.fdpitch, target.fdpitch, dt, 6);
+  disp.fdroll  = approach(disp.fdroll,  target.fdroll,  dt, 6);
   disp.alt   = approach(disp.alt,   target.alt,   dt, 8);
   disp.vsi   = approach(disp.vsi,   target.vsi,   dt, 6);
   disp.slip  = approach(disp.slip,  target.slip,  dt, 8);
   disp.baro  = approach(disp.baro,  target.baro,  dt, 6);
   disp.gs    = approach(disp.gs,    target.gs,    dt, 6);
+  disp.turn  = approach(disp.turn,  target.turn,  dt, 6);
   disp.altsel = approach(disp.altsel, target.altsel, dt, 8);
   disp.cdi   = approach(disp.cdi,   target.cdi,   dt, 6);
   disp.dist  = approach(disp.dist,  target.dist,  dt, 6);

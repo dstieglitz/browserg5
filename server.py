@@ -52,6 +52,10 @@ DATAREFS: dict[str, str] = {
     "brg":     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag_pilot",
     "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots
     "vshow":   "sim/cockpit2/radios/indicators/hsi_flag_glideslope_pilot",  # 1 = vertical guidance valid
+    # --- flight director command bars ---
+    "fdpitch": "sim/cockpit2/autopilot/flight_director_pitch_deg",   # commanded pitch
+    "fdroll":  "sim/cockpit2/autopilot/flight_director_roll_deg",    # commanded roll
+    "apmode":  "sim/cockpit2/autopilot/autopilot_mode",              # 0 off / 1 FD / 2 AP engaged
 }
 
 _last_rx = 0.0
@@ -90,6 +94,9 @@ def _demo_loop():
             "brg": (120.0 + 45.0 * math.sin(t * 0.1)) % 360.0,   # sweep the bearing needle
             "vdef": 0.8 * math.sin(t * 0.15),   # synthetic glideslope deviation
             "vshow": 1.0,
+            "fdpitch": 5.0 * math.sin(t * 0.22),
+            "fdroll": 14.0 * math.sin(t * 0.16),
+            "apmode": 2.0 if (int(t / 8) % 2 == 0) else 1.0,   # toggle AP (solid) / FD-only (hollow)
         }
         _last_rx = time.monotonic()
         time.sleep(0.03)
