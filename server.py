@@ -56,6 +56,12 @@ DATAREFS: dict[str, str] = {
     "fdpitch": "sim/cockpit2/autopilot/flight_director_pitch_deg",   # commanded pitch
     "fdroll":  "sim/cockpit2/autopilot/flight_director_roll_deg",    # commanded roll
     "apmode":  "sim/cockpit2/autopilot/autopilot_mode",              # 0 off / 1 FD / 2 AP engaged
+    # --- HSI nav-state annunciations ---
+    "navsrc":  "sim/cockpit2/radios/indicators/hsi_source_select_pilot",  # 0/1 = VLOC, 2 = GPS
+    "cdiscale": "sim/cockpit/gps/cdi_scale_index",   # 0 ENR / 1 TERM / 2 APR  (UNVERIFIED path)
+    "msg":     "sim/cockpit2/annunciators/gps_message",       # GPS message flag (UNVERIFIED path)
+    "obs":     "sim/cockpit/gps/gps_obs_mode",                # OBS mode active  (UNVERIFIED path)
+    "gpss":    "sim/cockpit2/autopilot/gpss_status",          # GPSS roll steering (UNVERIFIED path)
 }
 
 _last_rx = 0.0
@@ -97,6 +103,12 @@ def _demo_loop():
             "fdpitch": 5.0 * math.sin(t * 0.22),
             "fdroll": 14.0 * math.sin(t * 0.16),
             "apmode": 2.0 if (int(t / 8) % 2 == 0) else 1.0,   # toggle AP (solid) / FD-only (hollow)
+            # cycle the HSI annunciations so each state is exercised
+            "navsrc": 2.0 if (int(t / 10) % 2 == 0) else 0.0,  # GPS (magenta) <-> VLOC (green)
+            "cdiscale": float(int(t / 5) % 3),                 # ENR -> TERM -> APR
+            "msg": 1.0 if (int(t / 7) % 2 == 0) else 0.0,      # MSG flag blink
+            "obs": 1.0 if (int(t / 9) % 2 == 0) else 0.0,      # OBS on/off
+            "gpss": 1.0 if (int(t / 11) % 2 == 0) else 0.0,    # GPSS on/off
         }
         _last_rx = time.monotonic()
         time.sleep(0.03)
