@@ -44,21 +44,32 @@ DATAREFS: dict[str, str] = {
     "hdgbug":  "sim/cockpit/autopilot/heading_mag",        # selected heading
     "altsel":  "sim/cockpit/autopilot/altitude",           # selected altitude
     # --- HSI mode ---
+    # crs/cdi/tofrom/dist are DERIVED source-aware in snapshot() from the
+    # per-source `_*` datarefs below — the hsi_* composites are nav1-only.
     "trk":     "sim/cockpit2/gauges/indicators/ground_track_mag_pilot",
-    "crs":     "sim/cockpit/radios/gps_course_degtm",      # selected course
-    "cdi":     "sim/cockpit2/radios/indicators/hsi_hdef_dots_pilot",
-    "tofrom":  "sim/cockpit2/radios/indicators/hsi_flag_from_to_pilot",  # 0/1 to/2 from
-    "dist":    "sim/cockpit2/radios/indicators/hsi_dme_distance_nm_pilot",
     "brg":     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag_pilot",
     "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots
     "vshow":   "sim/cockpit2/radios/indicators/hsi_flag_glideslope_pilot",  # 1 = vertical guidance valid
+    # per-source variants — consumed and dropped in snapshot() (underscore keys)
+    "_crs_nav1": "sim/cockpit/radios/nav1_obs_degm",
+    "_crs_nav2": "sim/cockpit/radios/nav2_obs_degm",
+    "_crs_gps":  "sim/cockpit/radios/gps_course_degtm",
+    "_cdi_nav1": "sim/cockpit2/radios/indicators/nav1_hdef_dots_pilot",
+    "_cdi_nav2": "sim/cockpit2/radios/indicators/nav2_hdef_dots_pilot",
+    "_cdi_gps":  "sim/cockpit2/radios/indicators/gps_hdef_dots_pilot",
+    "_tf_nav1":  "sim/cockpit2/radios/indicators/nav1_flag_from_to_pilot",  # 0 flag/1 to/2 from
+    "_tf_nav2":  "sim/cockpit2/radios/indicators/nav2_flag_from_to_pilot",
+    "_dme_nav":  "sim/cockpit2/radios/indicators/hsi_dme_distance_nm_pilot",  # nav1 DME
+    "_dme_gps":  "sim/cockpit/radios/gps_dme_dist_m",                         # GPS dist to wpt (nm)
+    "_gps_dest": "sim/cockpit/gps/destination_type",                         # >0 = GPS has an active leg
     # --- flight director command bars ---
     "fdpitch": "sim/cockpit2/autopilot/flight_director_pitch_deg",   # commanded pitch
     "fdroll":  "sim/cockpit2/autopilot/flight_director_roll_deg",    # commanded roll
     "apmode":  "sim/cockpit2/autopilot/autopilot_mode",              # 0 off / 1 FD / 2 AP engaged
     # --- HSI nav-state annunciations ---
-    "navsrc":  "sim/cockpit2/radios/indicators/hsi_source_select_pilot",  # 0/1 = VLOC, 2 = GPS
-    "cdiscale": "sim/cockpit/gps/cdi_scale_index",   # 0 ENR / 1 TERM / 2 APR  (UNVERIFIED path)
+    # actuator (switch position) — the indicator variant is stuck on some aircraft
+    "navsrc":  "sim/cockpit2/radios/actuators/HSI_source_select_pilot",   # 0/1 = VLOC, 2 = GPS
+    "cdiscale": "sim/cockpit/radios/gps_cdi_sensitivity",  # enum 0=OCN 1=ENR 2=TERM 5=APR … (CONFIRMED)
     "msg":     "sim/cockpit2/annunciators/gps_message",       # GPS message flag (UNVERIFIED path)
     "obs":     "sim/cockpit/gps/gps_obs_mode",                # OBS mode active  (UNVERIFIED path)
     "gpss":    "sim/cockpit2/autopilot/gpss_status",          # GPSS roll steering (UNVERIFIED path)
@@ -66,6 +77,45 @@ DATAREFS: dict[str, str] = {
 
 _last_rx = 0.0
 _demo: dict | None = None
+
+# Keys the G5 knob may write back to X-Plane (their datarefs are in DATAREFS).
+WRITABLE = {"baro", "hdgbug", "altsel", "crs"}
+
+# --- IFR-1 -> G5 input channel ----------------------------------------------
+# When the panel's mode selector is on FMS2 ("G5 mode"), its encoders/buttons
+# drive the G5 units instead of the aircraft. Decoded events are queued here and
+# folded into the SSE stream as `_inputs` for the browser's dispatchBridgeInputs.
+G5_MODE = "FMS2"
+G5_ENC_UNIT = {"outer": "TOP_G5", "inner": "BOTTOM_G5"}   # outer ring=PFD, inner=HSI
+G5_BTN_UNIT = {"MENU": "TOP_G5", "CRSR": "BOTTOM_G5"}      # MENU=PFD press, CRSR=HSI press
+_g5_lock = threading.Lock()
+_g5_inputs: list[dict] = []
+
+
+def _push_g5_input(unit: str, action: str) -> None:
+    with _g5_lock:
+        _g5_inputs.append({"unit": unit, "action": action})
+
+
+def _drain_g5_inputs() -> list[dict]:
+    with _g5_lock:
+        if not _g5_inputs:
+            return []
+        out = _g5_inputs[:]
+        _g5_inputs.clear()
+        return out
+
+
+def _route_g5(ev) -> None:
+    """Translate an IFR-1 decoder event into a G5 knob action (duck-typed)."""
+    if hasattr(ev, "ring"):                        # EncoderEvent
+        unit = G5_ENC_UNIT.get(ev.ring)
+        if unit:
+            _push_g5_input(unit, "cw" if ev.direction > 0 else "ccw")
+    elif hasattr(ev, "button") and getattr(ev, "edge", None) == "press":
+        unit = G5_BTN_UNIT.get(ev.button)
+        if unit:
+            _push_g5_input(unit, "press")
 
 
 def _mark_rx(_path: str, _value: float) -> None:
@@ -105,7 +155,7 @@ def _demo_loop():
             "apmode": 2.0 if (int(t / 8) % 2 == 0) else 1.0,   # toggle AP (solid) / FD-only (hollow)
             # cycle the HSI annunciations so each state is exercised
             "navsrc": 2.0 if (int(t / 10) % 2 == 0) else 0.0,  # GPS (magenta) <-> VLOC (green)
-            "cdiscale": float(int(t / 5) % 3),                 # ENR -> TERM -> APR
+            "cdiscale": float([1, 2, 5][int(t / 5) % 3]),      # ENR -> TERM -> APR
             "msg": 1.0 if (int(t / 7) % 2 == 0) else 0.0,      # MSG flag blink
             "obs": 1.0 if (int(t / 9) % 2 == 0) else 0.0,      # OBS on/off
             "gpss": 1.0 if (int(t / 11) % 2 == 0) else 0.0,    # GPSS on/off
@@ -118,12 +168,73 @@ def _demo_loop():
         time.sleep(0.03)
 
 
+def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
+    """Own the IFR-1 HID. In G5_MODE, route events to the G5; otherwise hand them
+    to the aircraft Bridge (if an .mcc was given). Also refreshes the AP LEDs."""
+    try:
+        from ifrbridge.ifr1 import IFR1Device, Decoder
+    except Exception as e:  # noqa: BLE001 — hidapi missing / import error
+        print(f"IFR-1: cannot load HID layer ({e}); --ifr1 disabled.")
+        return
+    try:
+        device = IFR1Device()
+    except Exception as e:  # noqa: BLE001 — no device / not permitted
+        print(f"IFR-1: cannot open device ({e}); --ifr1 disabled.")
+        return
+
+    bridge = None
+    if mcc_path and xp is not None:
+        try:
+            from ifrbridge.bridge import Bridge
+            from ifrbridge.mcc import parse_mcc
+            bridge = Bridge(parse_mcc(mcc_path), xp, device=device, verbose=verbose)
+        except Exception as e:  # noqa: BLE001
+            print(f"IFR-1: aircraft bridge disabled ({e}); G5 routing only.")
+    decoder = bridge.decoder if bridge is not None else Decoder()
+    print(f"IFR-1: connected. Mode '{G5_MODE}' drives the G5; "
+          f"aircraft bridge={'on' if bridge else 'off'}.")
+
+    led_byte = -1
+    while True:
+        report = device.read()
+        if report:
+            for ev in decoder.feed(report):
+                if decoder.mode == G5_MODE:
+                    _route_g5(ev)
+                elif bridge is not None:
+                    bridge.handle_event(ev)
+        if bridge is not None:
+            nb = bridge.compute_led_byte()
+            if nb != led_byte:
+                led_byte = nb
+                device.set_leds(nb)
+        time.sleep(1.0 / 200.0)
+
+
 def snapshot(xp: XPlaneClient | None) -> dict:
     if _demo is not None:
         data = {k: round(v, 3) for k, v in _demo.items()}
     else:
         data = {key: round(xp.value(path), 3) for key, path in DATAREFS.items()}
+        # Build the HSI course/CDI/to-from/distance for the SELECTED source —
+        # the hsi_* composites are nav1-only, so pick per source (0/1=NAV, 2=GPS).
+        src = round(data.get("navsrc", 0))
+        if src >= 2:        # GPS
+            data["crs"], data["cdi"] = data["_crs_gps"], data["_cdi_gps"]
+            data["tofrom"] = 1.0 if data["_gps_dest"] > 0 else 0.0   # GPS leg = TO
+            data["dist"] = data["_dme_gps"]
+        elif src == 1:      # NAV2
+            data["crs"], data["cdi"] = data["_crs_nav2"], data["_cdi_nav2"]
+            data["tofrom"], data["dist"] = data["_tf_nav2"], data["_dme_nav"]
+        else:               # NAV1
+            data["crs"], data["cdi"] = data["_crs_nav1"], data["_cdi_nav1"]
+            data["tofrom"], data["dist"] = data["_tf_nav1"], data["_dme_nav"]
+        for k in [k for k in data if k.startswith("_")]:
+            data.pop(k)
     data["live"] = (time.monotonic() - _last_rx) < 1.0
+    inputs = _drain_g5_inputs()
+    if inputs:
+        data["_inputs"] = inputs
     return data
 
 
@@ -154,6 +265,27 @@ def make_handler(xp: XPlaneClient, rate_hz: float):
                 self._serve_events()
             else:
                 self.send_error(404)
+
+        def do_POST(self):
+            # Knob write-back: the G5 pushes the value it set (baro/heading bug/
+            # selected altitude/course) so X-Plane follows the simulated knob.
+            if self.path.split("?")[0] != "/write":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                data = {}
+            if xp is not None:
+                for k, v in data.items():
+                    if k in WRITABLE and k in DATAREFS:
+                        try:
+                            xp.set_dataref(DATAREFS[k], float(v))
+                        except (ValueError, TypeError):
+                            pass
+            self._send_headers("text/plain; charset=utf-8", 0)
 
         def _serve_page(self):
             try:
@@ -203,6 +335,11 @@ def main() -> int:
     ap.add_argument("--rate", type=float, default=30.0, help="stream Hz")
     ap.add_argument("--demo", action="store_true",
                     help="synthetic motion instead of X-Plane (for testing)")
+    ap.add_argument("--ifr1", action="store_true",
+                    help="read the Octavi IFR-1; mode FMS2 drives the G5 knobs")
+    ap.add_argument("--mcc", default=None,
+                    help="MobiFlight .mcc to bridge the aircraft in non-G5 modes")
+    ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
     xp = None
@@ -214,6 +351,10 @@ def main() -> int:
         xp.start_receiver(on_change=_mark_rx)
         for path in DATAREFS.values():
             xp.subscribe(path, freq=int(args.rate))
+
+    if args.ifr1:
+        threading.Thread(target=_ifr1_loop, args=(xp, args.mcc, args.verbose),
+                         daemon=True).start()
 
     handler = make_handler(xp, args.rate)
     httpd = ThreadingHTTPServer(("0.0.0.0", args.http_port), handler)

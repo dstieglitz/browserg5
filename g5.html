@@ -862,7 +862,9 @@ const MAG = "#d24fc8", CYAN = "#19d3ff", GRN = "#16c61a";
 //   navsrc   2+ = GPS (magenta), 0/1 = VLOC (green)
 //   cdiscale index into CDISCALE (GPS only); msg/obs/gpss are 0/1 flags
 const navInfo = (v) => (Math.round(v) >= 2 ? { l: "GPS", c: MAG } : { l: "VLOC", c: GRN });
-const CDISCALE = ["ENR", "TERM", "APR"];
+// X-Plane gps_cdi_sensitivity enum → annunciation
+const CDISCALE = ["OCN", "ENR", "TERM", "DPRT", "MAPR", "APR", "RNP", "LNAV",
+                  "LNAV+V", "L/VNAV", "LP", "LPV", "LP+V", "GLS"];
 
 function drawHSI(unit) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
@@ -1042,7 +1044,9 @@ function hsiReadouts(cx, cy, R) {
     ctx.fillStyle = MAG; ctx.font = `700 ${valFS}px ${FONT}`;
     ctx.fillText(value, x + w/2, y + h - valFS*0.5 - 4);
   };
-  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW,
+  // DIST: tenths under 100 NM (G5 resolution), whole numbers above
+  const distStr = disp.dist < 100 ? disp.dist.toFixed(1) : Math.round(disp.dist).toString();
+  dataBox("DIST NM", distStr, W, 0, "topright", BW,
           ["hsiBoxW", "distFS", "distLabFS"], STYLE.distLabFS, STYLE.distFS);
   dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", STYLE.hsiGsW,
           ["hsiGsW", "gsKtFS", "gsKtLabFS"], STYLE.gsKtLabFS, STYLE.gsKtFS);
@@ -1173,6 +1177,7 @@ function frame(now) {
     drawEditDialog(units[i], r);
   }
   if (units.length === 2 && hoverIdx >= 0) drawHover(unitRegion(hoverIdx));
+  if (dbgOn) updateDbg();
   requestAnimationFrame(frame);
 }
 
@@ -1231,10 +1236,23 @@ function menuItems(u) {
 }
 
 const cur = (k) => (override[k] ? target[k] : disp[k]);   // current effective value
-function setBaro(d)   { target.baro   = clamp(cur("baro") + d * 0.01, 27.50, 31.50); override.baro = true; }
-function setHdgBug(d) { target.hdgbug = ((cur("hdgbug") + d) % 360 + 360) % 360;      override.hdgbug = true; }
-function setAltSel(d) { target.altsel = Math.max(0, Math.round(cur("altsel")/100)*100 + d * 100); override.altsel = true; }
-function setCrs(d)    { target.crs    = ((cur("crs") + d) % 360 + 360) % 360;          override.crs = true; }
+// Push a knob-set value back to X-Plane via the server (coalesced ~80 ms so a
+// fast spin doesn't flood). No-op server-side in demo mode.
+const _pendingWrite = {}; let _writeTimer = null;
+function writeBack(key, value) {
+  _pendingWrite[key] = value;
+  if (_writeTimer) return;
+  _writeTimer = setTimeout(() => {
+    _writeTimer = null;
+    const body = JSON.stringify(_pendingWrite);
+    for (const k in _pendingWrite) delete _pendingWrite[k];
+    fetch("/write", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
+  }, 80);
+}
+function setBaro(d)   { target.baro   = clamp(cur("baro") + d * 0.01, 27.50, 31.50); override.baro = true; writeBack("baro", target.baro); }
+function setHdgBug(d) { target.hdgbug = ((cur("hdgbug") + d) % 360 + 360) % 360;      override.hdgbug = true; writeBack("hdgbug", target.hdgbug); }
+function setAltSel(d) { target.altsel = Math.max(0, Math.round(cur("altsel")/100)*100 + d * 100); override.altsel = true; writeBack("altsel", target.altsel); }
+function setCrs(d)    { target.crs    = ((cur("crs") + d) % 360 + 360) % 360;          override.crs = true; writeBack("crs", target.crs); }
 
 function knobTurn(u, dir) {
   const m = u.ui;
@@ -1554,6 +1572,40 @@ function nudgeEdge(edge, grow) {
   menu.addEventListener("click", (e) => { if (e.target === menu) close(); });   // tap backdrop closes
   openCfg = () => { menu.style.display = "flex"; cfgShown = true; };
 })();
+
+// ---- debug overlay (press G): live raw stream values -----------------------
+let dbgOn = false, dbgEl = null;
+(function () {
+  dbgEl = document.createElement("div");
+  dbgEl.id = "dbg";
+  dbgEl.style.cssText = "position:fixed;top:0;left:0;z-index:30;display:none;pointer-events:none;" +
+    "font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#cfeecf;background:rgba(0,0,0,0.82);" +
+    "padding:7px 10px;white-space:pre;max-width:96vw;border:1px solid #2a2e34;border-radius:0 0 8px 0;";
+  document.body.appendChild(dbgEl);
+  addEventListener("keydown", (e) => {
+    if ((e.key === "g" || e.key === "G") && !e.metaKey && !e.ctrlKey &&
+        !/^(INPUT|TEXTAREA)$/.test((e.target || {}).tagName)) {
+      dbgOn = !dbgOn; dbgEl.style.display = dbgOn ? "block" : "none";
+    }
+  });
+})();
+const _dbgFmt = (v) => (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v));
+function updateDbg() {
+  const age = Math.round(performance.now() - lastData);
+  const scale = ["ENR", "TERM", "APR"][Math.round(target.cdiscale)] || "?";
+  const ov = Object.keys(override).filter((k) => override[k]).join(",") || "none";
+  const hdr = [
+    `STREAM  live=${target.live}  age=${age}ms  noData=${noData}`,
+    `MODE=${MODE}   ` + units.map((u) => `${u.id.replace("_G5", "")}:${u.page}/${u.ui.mode}`).join("   "),
+    `navsrc ${_dbgFmt(target.navsrc)}=${navInfo(target.navsrc).l}   cdiscale=${scale}   tofrom=${_dbgFmt(target.tofrom)}   vshow=${_dbgFmt(target.vshow)}`,
+    `overrides: ${ov}`,
+  ];
+  const cells = Object.keys(target).filter((k) => k !== "live")
+    .map((k) => `${k}=${_dbgFmt(target[k])}`.padEnd(15));
+  const rows = [];
+  for (let i = 0; i < cells.length; i += 4) rows.push(cells.slice(i, i + 4).join(" "));
+  dbgEl.textContent = hdr.join("\n") + "\n" + "─".repeat(63) + "\n" + rows.join("\n");
+}
 
 // ---- wake lock + start -----------------------------------------------------
 let wakeLock = null;
