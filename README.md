@@ -1,5 +1,7 @@
 # browserg5
 
+![browserg5 in action](browserg5_in_action.jpg)
+
 A browser-based **simulation of the Garmin G5 Electronic Flight Instrument**,
 fed live from X-Plane. It renders the G5's PFD and HSI pages on an HTML canvas
 and aims to match the real unit's layout, scales, colors, and knob/menu behavior
