@@ -17,6 +17,7 @@ import json
 import math
 import os
 import socket
+import struct
 import sys
 import threading
 import time
@@ -155,6 +156,28 @@ def _g5_tick() -> None:
 def _mark_rx(_path: str, _value: float) -> None:
     global _last_rx
     _last_rx = time.monotonic()
+
+
+def _resend_subscriptions(xp, subs, freq: int) -> None:
+    """Re-send the RREF subscriptions. X-Plane forgets them when it (re)starts,
+    and the client only subscribes once at boot — so without this the server
+    stays dark if it launched before X-Plane (e.g. as a boot service)."""
+    for path, index in subs:
+        pb = path.encode("latin-1")
+        msg = b"RREF\x00" + struct.pack("<ii", freq, index) + pb + b"\x00" * (400 - len(pb))
+        try:
+            xp.sock.sendto(msg, xp.addr)
+        except OSError:
+            pass
+
+
+def _resubscribe_loop(xp, subs, freq: int) -> None:
+    """Watchdog: while no fresh data is arriving, keep (re)subscribing every 2 s
+    so the server self-heals across start-order and X-Plane restarts."""
+    while True:
+        time.sleep(2.0)
+        if time.monotonic() - _last_rx > 2.0:
+            _resend_subscriptions(xp, subs, freq)
 
 
 def _demo_loop():
@@ -387,8 +410,11 @@ def main() -> int:
     else:
         xp = XPlaneClient(host=args.xplane_host, port=args.xplane_port)
         xp.start_receiver(on_change=_mark_rx)
-        for path in DATAREFS.values():
-            xp.subscribe(path, freq=int(args.rate))
+        freq = int(args.rate)
+        subs = [(path, xp.subscribe(path, freq=freq)) for path in DATAREFS.values()]
+        # self-healing watchdog: re-subscribe while no data (handles boot-before-
+        # X-Plane and X-Plane restarts without needing a server restart).
+        threading.Thread(target=_resubscribe_loop, args=(xp, subs, freq), daemon=True).start()
 
     if args.ifr1:
         threading.Thread(target=_ifr1_loop, args=(xp, args.mcc, args.verbose),
