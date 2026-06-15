@@ -11,16 +11,25 @@ UDP client and streams data to the browser over Server-Sent Events.
 
 ## What it renders
 
-- **PFD page** — attitude (pitch ladder, roll scale, slip/skid), airspeed tape,
-  altimeter + selected-altitude bug + baro, VSI, heading/track tape, ground
-  speed. (In progress: airspeed color strip & trend vector, turn-rate indicator,
-  CDI, vertical-deviation diamond — see [`G5_BUILD.md`](G5_BUILD.md).)
-- **HSI page** — rotating compass card, course needle + CDI, heading/track bugs,
-  distance/ground-speed readouts. (In progress: bearing pointers, nav-source &
-  CDI-scale annunciations.)
+- **PFD page** — attitude (pitch ladder, roll scale w/ white pointer, slip/skid,
+  yellow aircraft + chevron), airspeed tape with color "barber pole" strip +
+  magenta trend vector + Vne-red readout + Vspeed tags, altimeter with
+  selected-altitude box/bug + baro box, VSI, turn-rate indicator, CDI, vertical-
+  deviation (glideslope/glidepath) diamond, and a heading/track tape (3-digit
+  labels, 1°/5° ticks clamped to the bottom, current-heading lubber box with a
+  triangle tab + interlocking heading bug, magenta track triangle). Fixed-size
+  cyan/magenta corner boxes (selected altitude, baro, ground speed).
+- **HSI page** — rotating compass card, magenta course needle + CDI + TO/FROM,
+  current-track triangle + dashed line, heading bug, light-blue bearing pointer,
+  center annunciations (nav source, GPS CDI scale, + MSG/OBS/GPSS stubs), vertical-
+  deviation diamond, and edge-flush corner boxes (DIST, GS, selected heading).
 
 Display data arrives at ~30 Hz and is smoothed at the display end so motion
-stays fluid.
+stays fluid. The `--demo` server animates attitude, speeds, and the CDI/bearing
+needles for testing.
+
+> **NOT FOR NAVIGATION** — this is a simulation/visualization, not a certified
+> instrument.
 
 ## Two independent units
 
@@ -49,6 +58,19 @@ Knob behavior follows the spec: when no menu is open, turning adjusts the
 barometric setting (PFD) or the heading/track bug (HSI); pressing opens the menu;
 in the menu, turning moves the cursor and pressing selects; selecting Heading /
 Altitude opens a centered edit dialog.
+
+## Developer mode (visual tuning)
+
+Press **`D`** in the browser (or open with `?dev`) to toggle a live style panel:
+
+- Every tunable size/font lives in the `STYLE` object; the panel auto-generates a
+  number input per key. Edits apply **immediately** and persist in `localStorage`.
+- Opening the panel **freezes all animation** so the display can be inspected.
+- **Hover a component** on the canvas and the panel highlights the row(s) that
+  size it — so you can find the right knob without guessing.
+- The panel is **draggable** (grab its header) and remembers its position.
+- **Copy JSON** copies the current values (also logged to console) to bake back
+  into `STYLE_DEFAULTS`; **Reset** clears overrides.
 
 ## Run it
 
@@ -88,7 +110,11 @@ panel bridge. Open the URL in a browser and click once to start.
 
 ## Tuning / extending
 
+- **Sizes/fonts:** use developer mode (press `D`) — values live in `STYLE`.
+  Adding a key to `STYLE_DEFAULTS` auto-adds a panel input; reference it in the
+  draw code and (optionally) register a `hit(x,y,w,h,[keys])` region so hovering
+  the component highlights its row.
 - Data fields and their datarefs: `DATAREFS` in `server.py`.
-- Visuals (layout, tape scales, colors): `g5.html` — all drawing is in the
+- Other visuals (layout, tape scales, colors): `g5.html` — all drawing is in the
   `<script>` block. `L()` controls PFD geometry; `pxKt` / `pxFt` set tape scales.
 - Conformance status and what's left to build: `G5_BUILD.md`.

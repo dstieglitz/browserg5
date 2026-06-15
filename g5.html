@@ -99,15 +99,43 @@ function rrect(x, y, w, h, r) {
 // Fixed-size value box (selected altitude, baro, ground speed). FIXED pixel
 // height/font — does NOT scale with the display, per design. Auto-shrinks the
 // font only if the text would overflow the given width.
-const BOX_H = 30;
-const HDG_FS = 15;          // PFD heading-box digit size (HSI is slightly bigger)
-function valueBox(x, y, w, color, text) {
+// ---- live-tunable style (developer mode: press D, or open with ?dev) ------
+const STYLE_DEFAULTS = {
+  asiBoxH: 28, asiBoxFS: 17,   // airspeed readout pointer (width = speed-tape width)
+  altBoxH: 28, altBoxFS: 17,   // altitude readout pointer (width = altimeter width)
+  baroBoxH: 28, baroFS: 16, baroBoxW: 90,   // barometric setting box (width adjustable)
+  gsBoxH: 28, gsFS: 16,        // ground speed box (PFD)
+  altSelBugH: 28,              // selected-altitude tape bug height
+  hdgFS: 15,           // PFD heading-box digits
+  htBoxH: 22,          // PFD heading box height
+  htBugWPct: 76,       // PFD heading bug width (% of box width)
+  htBugH: 18,          // PFD heading bug height
+  htTickMinor: 5,      // PFD heading 1° tick length
+  htTickMajor: 6,      // PFD heading 5° tick length
+  altSelFS: 18,        // selected-altitude number font
+  altSelBoxH: 23,      // selected-altitude box height
+  hsiMargin: 4,        // HSI display-edge margin
+  hsiTopReserve: 27,   // HSI top space reserved for the heading box
+  hsiBoxW: 87,         // HSI DIST / selected-heading box width
+  hsiGsW: 78,          // HSI GS box width
+  hsiHdgBoxH: 23,      // HSI selected-heading box height
+  hsiHdgFS: 17,        // HSI selected-heading digits
+  hsiDataFS: 16,       // HSI DIST/GS number font
+  hsiLabFS: 10,        // HSI DIST/GS label font
+};
+const STYLE = Object.assign({}, STYLE_DEFAULTS);
+try { Object.assign(STYLE, JSON.parse(localStorage.getItem("g5style") || "{}")); } catch (_) {}
+let HDG_FS = STYLE.hdgFS;   // synced from STYLE each frame
+
+// developer mode: freeze + component→row hover highlighting
+let devFrozen = false, hitRegions = [], devPanelEl = null;
+function valueBox(x, y, w, color, text, h, fs0) {
   ctx.fillStyle = "#000"; ctx.strokeStyle = color; ctx.lineWidth = 2;
-  rrect(x, y, w, BOX_H, 4); ctx.fill(); ctx.stroke();
-  let fs = Math.round(BOX_H * 0.58); ctx.font = `700 ${fs}px ${FONT}`;
+  rrect(x, y, w, h, 4); ctx.fill(); ctx.stroke();
+  let fs = fs0; ctx.font = `700 ${fs}px ${FONT}`;
   while (ctx.measureText(text).width > w - 8 && fs > 8) { fs--; ctx.font = `700 ${fs}px ${FONT}`; }
   ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(text, x + w / 2, y + BOX_H / 2 + 1);
+  ctx.fillText(text, x + w / 2, y + h / 2 + 1);
 }
 
 // Builds a "bug" marker path: a rectangle with a triangular notch CUT OUT of one
@@ -148,6 +176,20 @@ function selBox(x, y, w, h, value, numFS) {
   while (ctx.measureText(value).width > avail && fs > 8) { fs--; ctx.font = `700 ${fs}px ${FONT}`; }
   ctx.textAlign = "right"; ctx.textBaseline = "middle";
   ctx.fillText(value, x + w - 6, y + h / 2 + 1);
+}
+
+// Dev mode: record a component's bounding box (in local draw coords) + the STYLE
+// keys that size it, so hovering it can highlight the matching panel rows.
+function hit(lx, ly, w, h, keys) {
+  if (!devFrozen) return;
+  const t = ctx.getTransform();
+  hitRegions.push({ x: (t.a*lx + t.e)/DPR, y: (t.d*ly + t.f)/DPR, w: t.a*w/DPR, h: t.d*h/DPR, keys });
+}
+function devHighlight(keys) {
+  if (!devPanelEl) return;
+  devPanelEl.querySelectorAll("label[data-k]").forEach((l) => {
+    l.style.background = keys && keys.includes(l.dataset.k) ? "#3c5a26" : "";
+  });
 }
 
 // ---- layout ----------------------------------------------------------------
@@ -369,11 +411,12 @@ function speedTape(g) {
   // readout: box turns RED at/above Vne; number turns YELLOW if the trend
   // vector reaches Vne (spec §2.1).
   const overVne = v >= ASI.vne, trendVne = (v + asiTrend) >= ASI.vne;
-  readout(x, midY, w, Math.round(v).toString(), "right",
+  readout(x, midY, w, Math.round(v).toString(), "right", STYLE.asiBoxH, STYLE.asiBoxFS,
           overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
-  // ground speed box at the bottom of the speed tape (magenta, fixed size),
-  // flush to the bottom edge
-  valueBox(x, H - BOX_H, w, "#e94fd0", "GS " + Math.round(disp.gs));
+  hit(x, midY - STYLE.asiBoxH/2, w, STYLE.asiBoxH, ["asiBoxH", "asiBoxFS"]);
+  // ground speed box at the bottom of the speed tape (magenta), flush to the bottom
+  valueBox(x, H - STYLE.gsBoxH, w, "#e94fd0", "GS " + Math.round(disp.gs), STYLE.gsBoxH, STYLE.gsFS);
+  hit(x, H - STYLE.gsBoxH, w, STYLE.gsBoxH, ["gsBoxH", "gsFS"]);
 }
 
 function altTape(g) {
@@ -389,20 +432,20 @@ function altTape(g) {
     if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+9,y); ctx.stroke(); ctx.fillText(s, x+13, y); }
     else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+5,y); ctx.stroke(); }
   }
-  // selected-altitude bug (cyan), clipped to the tape — same height as the
-  // altitude readout box (BOX_H); notch cut into the edge facing the scale
+  // selected-altitude bug (cyan), clipped to the tape; notch cut into the edge
+  // facing the scale
   const yb = midY - (disp.altsel - v) * g.pxFt;
   ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  bugPath(x + 7, yb, 14, BOX_H, "right", 10, 5); ctx.fill(); ctx.stroke();
+  bugPath(x + 7, yb, 14, STYLE.altSelBugH, "right", 10, 5); ctx.fill(); ctx.stroke();
   ctx.restore();
-  readout(x, midY, w, Math.round(v).toString(), "left");
-  // selected-altitude box (top) + barometric setting box (bottom), both cyan,
-  // both fixed size.
+  readout(x, midY, w, Math.round(v).toString(), "left", STYLE.altBoxH, STYLE.altBoxFS);
+  hit(x, midY - STYLE.altBoxH/2, w, STYLE.altBoxH, ["altBoxH", "altBoxFS"]);
   // selected altitude — extends to the right edge of the screen; the box hugs
   // the number (~1px), font size unchanged
-  const aFS = Math.round(BOX_H * 0.6);
-  selBox(x, top, W - x, Math.round(aFS * 0.72) + 4, Math.round(disp.altsel).toString(), aFS);
-  valueBox(x, H - BOX_H, w, "#19d3ff", disp.baro.toFixed(2));
+  selBox(x, top, W - x, STYLE.altSelBoxH, Math.round(disp.altsel).toString(), STYLE.altSelFS);
+  hit(x, top, W - x, STYLE.altSelBoxH, ["altSelFS", "altSelBoxH", "altSelBugH"]);
+  valueBox(x, H - STYLE.baroBoxH, STYLE.baroBoxW, "#19d3ff", disp.baro.toFixed(2), STYLE.baroBoxH, STYLE.baroFS);
+  hit(x, H - STYLE.baroBoxH, STYLE.baroBoxW, STYLE.baroBoxH, ["baroBoxH", "baroFS", "baroBoxW"]);
 }
 
 function vsiTape(g) {
@@ -417,8 +460,8 @@ function vsiTape(g) {
 
 // Current-value pointer (airspeed / altitude). FIXED height/font — does not
 // scale with the display.
-function readout(x, midY, w, text, side, bg = "#000", fg = "#fff") {
-  const h = BOX_H, y = midY - h/2, arrow = 9;
+function readout(x, midY, w, text, side, h, fs, bg = "#000", fg = "#fff") {
+  const y = midY - h/2, arrow = 9;
   ctx.fillStyle = bg; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
   ctx.beginPath();
   if (side === "right") {
@@ -427,7 +470,7 @@ function readout(x, midY, w, text, side, bg = "#000", fg = "#fff") {
     ctx.moveTo(x+w, y); ctx.lineTo(x+arrow, y); ctx.lineTo(x, midY); ctx.lineTo(x+arrow, y+h); ctx.lineTo(x+w, y+h);
   }
   ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = fg; ctx.font = `700 ${Math.round(h*0.6)}px ${FONT}`;
+  ctx.fillStyle = fg; ctx.font = `700 ${fs}px ${FONT}`;
   ctx.textBaseline = "middle"; ctx.textAlign = side === "right" ? "right" : "left";
   ctx.fillText(text, side === "right" ? x+w-arrow-6 : x+arrow+6, midY+1);
 }
@@ -439,7 +482,7 @@ function headingTape(g) {
   ctx.fillStyle = "#0a3f6e"; ctx.fillRect(0, 0, W, h);
   ctx.strokeStyle = "#06243f"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,h); ctx.lineTo(W,h); ctx.stroke();
 
-  const bh = HDG_FS + 7;                          // short heading box, pinned to the top
+  const bh = STYLE.htBoxH;                         // short heading box, pinned to the top
   ctx.font = `700 ${HDG_FS}px ${FONT}`;
   const bw = Math.ceil(ctx.measureText("000").width) + 12;   // just wide enough for 3 digits
   const labelY = bh / 2;
@@ -454,7 +497,7 @@ function headingTape(g) {
   for (let d = Math.ceil(hdg-span); d <= hdg+span; d++) {
     const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd, major = (d % 5 === 0);
     ctx.lineWidth = major ? 1.5 : 1;
-    ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, h - (major ? 9 : 5)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, h - (major ? STYLE.htTickMajor : STYLE.htTickMinor)); ctx.stroke();
     if (d % 10 === 0 && Math.abs(x - cx) > bw/2 + 15) {
       const lbl = (dd===0 ? 360 : dd).toString().padStart(3, "0");
       ctx.fillText(lbl, x, labelY);
@@ -464,9 +507,9 @@ function headingTape(g) {
   // heading bug (cyan) — same width as the box, slightly shorter; its top-edge
   // notch mirrors the box's tab so the two interlock ("two parts of a whole")
   const dh = ((disp.hdgbug - hdg + 540) % 360) - 180, xb = cx + dh * ppd;
-  const hbh = bh - 4;
+  const hbh = STYLE.htBugH;
   ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  bugPath(xb, bh + hbh / 2, bw * 0.75, hbh, "up", 7, 6); ctx.fill(); ctx.stroke();
+  bugPath(xb, bh + hbh / 2, bw * STYLE.htBugWPct / 100, hbh, "up", 7, 6); ctx.fill(); ctx.stroke();
 
   // current ground-track triangle (magenta) at the bottom of the band, pointing up
   const dt = ((disp.trk - hdg + 540) % 360) - 180, xt = cx + dt * ppd;
@@ -484,6 +527,7 @@ function headingTape(g) {
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   let hh = Math.round(((hdg%360)+360)%360); if (hh===0) hh=360;
   ctx.fillText(hh.toString().padStart(3,"0"), cx, bh/2 + 1);
+  hit(0, 0, W, h, ["htBoxH", "hdgFS", "htTickMinor", "htTickMajor", "htBugWPct", "htBugH"]);
 }
 
 function stale() {
@@ -504,7 +548,7 @@ const HSI = { navsrc: "GPS", navcolor: MAG, cdiscale: "ENR", msg: "", obs: false
 function drawHSI(unit) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
   // fill the display: only a few px of margin, with room at the top for the box
-  const M = 4, boxH = HDG_FS + 12, cx = W / 2;
+  const M = STYLE.hsiMargin, boxH = STYLE.hsiTopReserve, cx = W / 2;
   const top = M + boxH, bot = H - M;
   const R = Math.min((W - 2 * M) / 2, (bot - top) / 2);
   const cy = (top + bot) / 2;
@@ -662,32 +706,33 @@ function hsiVDI(cx, cy, R) {
 }
 
 function hsiReadouts(cx, cy, R) {
-  const fs = Math.round(W*0.05);
-  const labFS = Math.round(fs*0.5), numFS = Math.round(fs*0.82);
-  const BW = Math.round(fs*4.0);          // shared box width (DIST, GS, heading)
+  const labFS = STYLE.hsiLabFS, numFS = STYLE.hsiDataFS;
+  const BW = STYLE.hsiBoxW;               // shared box width (DIST, heading)
   // grey-bordered box with the label INSIDE (white, top) over a magenta number.
   // anchorX/anchorY is the corner; corner string picks which corner to clamp to.
-  const dataBox = (label, value, anchorX, anchorY, corner, w) => {
+  const dataBox = (label, value, anchorX, anchorY, corner, w, keys) => {
     const h = labFS + numFS + 9;
     const x = corner.includes("right") ? anchorX - w : anchorX;
     const y = corner.includes("bottom") ? anchorY - h : anchorY;
     ctx.fillStyle = "#000"; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1;
     rrect(x, y, w, h, 3); ctx.fill(); ctx.stroke();
+    hit(x, y, w, h, keys);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillStyle = "#e8eaed"; ctx.font = `600 ${labFS}px ${FONT}`;
     ctx.fillText(label, x + w/2, y + labFS*0.5 + 4);
     ctx.fillStyle = MAG; ctx.font = `700 ${numFS}px ${FONT}`;
     ctx.fillText(value, x + w/2, y + h - numFS*0.5 - 4);
   };
-  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW);
-  dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", Math.round(BW*0.97));
+  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW, ["hsiBoxW", "hsiDataFS", "hsiLabFS"]);
+  dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", STYLE.hsiGsW, ["hsiGsW", "hsiDataFS", "hsiLabFS"]);
 
   // selected heading (bottom-right) — wide, short cyan box; thin bug icon + 060°,
   // only a few px between the number and the border
   let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
   const shTxt = hb.toString().padStart(3,"0") + "°";
-  const bh = Math.round(fs*1.25), bw = BW, bx = W - bw, by = H - bh;
-  selBox(bx, by, bw, bh, shTxt, Math.round(bh*0.62));
+  const bh = STYLE.hsiHdgBoxH, bw = BW, bx = W - bw, by = H - bh;
+  selBox(bx, by, bw, bh, shTxt, STYLE.hsiHdgFS);
+  hit(bx, by, bw, bh, ["hsiBoxW", "hsiHdgBoxH", "hsiHdgFS"]);
 }
 
 // ---- PFD wrapper + compositor ----------------------------------------------
@@ -712,6 +757,9 @@ function renderInto(unit, x, y, w, h) {
 let prevT = performance.now();
 function frame(now) {
   const dt = Math.min(0.1, (now - prevT)/1000); prevT = now;
+  HDG_FS = STYLE.hdgFS;   // pick up live style edits
+  hitRegions = [];
+  if (!devFrozen) {   // dev mode freezes all motion so the display can be inspected
   disp.pitch = approach(disp.pitch, target.pitch, dt, 12);
   disp.roll  = approach(disp.roll,  target.roll,  dt, 12);
   disp.ias   = approach(disp.ias,   target.ias,   dt, 8);
@@ -733,6 +781,7 @@ function frame(now) {
   disp.trk    = approachAngle(disp.trk, target.trk, dt, 8);
   disp.crs    = approachAngle(disp.crs, target.crs, dt, 8);
   disp.brg    = approachAngle(disp.brg, target.brg, dt, 8);
+  }
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, RW, RH);
@@ -857,7 +906,17 @@ cvs.addEventListener("wheel", (e) => {
   if (detents === 4) wheelAccum = 0;                       // drop leftover from a big flick
 }, { passive: false });
 cvs.addEventListener("mousedown", (e) => { if (e.button === 0) { e.preventDefault(); g5Input(unitIndexAt(e.clientY), "press"); } });
-cvs.addEventListener("mousemove", (e) => { hoverIdx = unitIndexAt(e.clientY); });
+cvs.addEventListener("mousemove", (e) => {
+  hoverIdx = unitIndexAt(e.clientY);
+  if (devFrozen) {   // highlight the panel row(s) for the component under the cursor
+    let found = null;
+    for (let i = hitRegions.length - 1; i >= 0; i--) {
+      const r = hitRegions[i];
+      if (e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h) { found = r.keys; break; }
+    }
+    devHighlight(found);
+  }
+});
 cvs.addEventListener("mouseleave", () => { hoverIdx = -1; });
 cvs.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -928,6 +987,67 @@ function drawHover(reg) {
   ctx.strokeStyle = "rgba(25,211,255,0.45)"; ctx.lineWidth = 2;
   ctx.strokeRect(reg.x + 1, reg.y + 1, reg.w - 2, reg.h - 2);
 }
+
+// ---- developer style panel (press D to toggle, or open with ?dev) ---------
+// Live-edit every STYLE value; changes apply immediately and persist in
+// localStorage. "Copy JSON" copies the current values (also logged to console)
+// so they can be baked in as new defaults.
+(function devPanel() {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;top:0;left:0;max-height:96vh;overflow:auto;z-index:50;"
+    + "background:rgba(18,18,22,0.95);color:#dfe3e6;font:12px ui-monospace,Menlo,monospace;"
+    + "padding:0 10px 8px;width:248px;display:none;border:1px solid #444;border-radius:4px;";
+  let rows = `<div id="g5Drag" style="cursor:move;user-select:none;margin:0 -10px 6px;`
+    + `padding:6px 10px;background:#2a2d33;border-radius:3px 3px 0 0">G5 STYLE — drag · D toggles</div>`;
+  for (const k in STYLE)
+    rows += `<label data-k="${k}" style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin:3px 0;padding:0 2px;border-radius:2px">`
+      + `<span>${k}</span><input data-k="${k}" type="number" step="1" value="${STYLE[k]}" `
+      + `style="width:66px;background:#000;color:#19d3ff;border:1px solid #555"></label>`;
+  rows += `<div style="margin-top:8px;display:flex;gap:6px">`
+    + `<button id="g5Reset" style="flex:1">Reset</button>`
+    + `<button id="g5Copy" style="flex:1">Copy JSON</button></div>`
+    + `<div id="g5Msg" style="opacity:.7;margin-top:6px;min-height:14px"></div>`
+    + `<textarea id="g5Json" readonly style="width:100%;height:130px;display:none;`
+    + `margin-top:4px;background:#000;color:#9fe6ff;border:1px solid #555;font:11px ui-monospace,monospace"></textarea>`;
+  p.innerHTML = rows;
+  document.body.appendChild(p);
+  devPanelEl = p;
+  // initial position (restore saved, else top-right)
+  let pos = null; try { pos = JSON.parse(localStorage.getItem("g5panelpos")); } catch (_) {}
+  p.style.left = (pos ? pos.x : Math.max(0, window.innerWidth - 258)) + "px";
+  p.style.top  = (pos ? pos.y : 0) + "px";
+  // drag by the header
+  let drag = null;
+  p.querySelector("#g5Drag").addEventListener("mousedown", (e) => {
+    drag = { x: e.clientX - p.offsetLeft, y: e.clientY - p.offsetTop }; e.preventDefault();
+  });
+  addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    p.style.left = (e.clientX - drag.x) + "px"; p.style.top = (e.clientY - drag.y) + "px";
+  });
+  addEventListener("mouseup", () => {
+    if (drag) localStorage.setItem("g5panelpos", JSON.stringify({ x: p.offsetLeft, y: p.offsetTop }));
+    drag = null;
+  });
+  const save = () => { const d = {}; for (const k in STYLE) if (STYLE[k] !== STYLE_DEFAULTS[k]) d[k] = STYLE[k];
+    localStorage.setItem("g5style", JSON.stringify(d)); };
+  p.addEventListener("input", (e) => { const k = e.target.dataset.k; if (!k) return;
+    const v = parseFloat(e.target.value); if (!isNaN(v)) { STYLE[k] = v; save(); } });
+  p.querySelector("#g5Reset").onclick = () => { for (const k in STYLE_DEFAULTS) STYLE[k] = STYLE_DEFAULTS[k];
+    localStorage.removeItem("g5style"); p.querySelectorAll("input[data-k]").forEach(i => i.value = STYLE[i.dataset.k]); };
+  p.querySelector("#g5Copy").onclick = () => {
+    const json = JSON.stringify(STYLE, null, 2); console.log(json);
+    const ta = p.querySelector("#g5Json");
+    ta.style.display = "block"; ta.value = json; ta.focus(); ta.select();
+    let ok = false; try { ok = document.execCommand("copy"); } catch (_) {}
+    if (!ok && navigator.clipboard) navigator.clipboard.writeText(json).then(() => {}).catch(() => {});
+    p.querySelector("#g5Msg").textContent = ok ? "copied — also shown below" : "select text below & ⌘C (also in console)";
+  };
+  const setVis = (v) => { p.style.display = v ? "block" : "none"; devFrozen = v; if (!v) devHighlight(null); };
+  addEventListener("keydown", (e) => { if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if ((e.key === "d" || e.key === "D") && !e.metaKey && !e.ctrlKey) setVis(p.style.display === "none"); });
+  if (/[?&]dev/.test(location.search)) setVis(true);
+})();
 
 // ---- wake lock + start -----------------------------------------------------
 let wakeLock = null;
