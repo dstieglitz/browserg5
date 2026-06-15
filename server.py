@@ -84,10 +84,10 @@ def _demo_loop():
             "altsel": 3000.0,      # fixed selected altitude for the demo
             "trk": 50.0,
             "crs": 150.0,
-            "cdi": 1.2,
+            "cdi": 2.0 * math.sin(t * 0.13),                     # sweep the CDI needle
             "tofrom": 1.0,
             "dist": 1000.0,
-            "brg": 120.0,
+            "brg": (120.0 + 45.0 * math.sin(t * 0.1)) % 360.0,   # sweep the bearing needle
             "vdef": 0.8 * math.sin(t * 0.15),   # synthetic glideslope deviation
             "vshow": 1.0,
         }

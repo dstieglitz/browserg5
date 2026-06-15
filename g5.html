@@ -133,6 +133,23 @@ function bugPath(cx, cy, w, h, face, nd, nh) {
   ctx.closePath();
 }
 
+// Cyan "selected" box (selected altitude on the PFD, selected heading on the
+// HSI): thin cyan border, a small bug icon on the left, value right-aligned.
+// Identical look in both places — the heading one just passes a value with "°".
+function selBox(x, y, w, h, value, numFS) {
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#19d3ff"; ctx.lineWidth = 1;
+  rrect(x, y, w, h, 3); ctx.fill(); ctx.stroke();
+  const iconX = x + 8, iconW = 7;
+  ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  bugPath(iconX, y + h / 2, iconW, Math.round(h * 0.5), "right", 4, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#19d3ff";
+  let fs = numFS; const avail = (x + w - 6) - (iconX + iconW + 4);
+  ctx.font = `700 ${fs}px ${FONT}`;
+  while (ctx.measureText(value).width > avail && fs > 8) { fs--; ctx.font = `700 ${fs}px ${FONT}`; }
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  ctx.fillText(value, x + w - 6, y + h / 2 + 1);
+}
+
 // ---- layout ----------------------------------------------------------------
 function L() {
   const headH = Math.round(clamp(H * 0.055, 34, 52));
@@ -354,8 +371,9 @@ function speedTape(g) {
   const overVne = v >= ASI.vne, trendVne = (v + asiTrend) >= ASI.vne;
   readout(x, midY, w, Math.round(v).toString(), "right",
           overVne ? "#c41a1a" : "#000", trendVne && !overVne ? "#ffd21a" : "#fff");
-  // ground speed box at the bottom of the speed tape (magenta, fixed size)
-  valueBox(x, top + h - BOX_H, w, "#e94fd0", "GS " + Math.round(disp.gs));
+  // ground speed box at the bottom of the speed tape (magenta, fixed size),
+  // flush to the bottom edge
+  valueBox(x, H - BOX_H, w, "#e94fd0", "GS " + Math.round(disp.gs));
 }
 
 function altTape(g) {
@@ -380,8 +398,11 @@ function altTape(g) {
   readout(x, midY, w, Math.round(v).toString(), "left");
   // selected-altitude box (top) + barometric setting box (bottom), both cyan,
   // both fixed size.
-  valueBox(x, top, w, "#19d3ff", Math.round(disp.altsel).toString());
-  valueBox(x, top + h - BOX_H, w, "#19d3ff", disp.baro.toFixed(2));
+  // selected altitude — extends to the right edge of the screen; the box hugs
+  // the number (~1px), font size unchanged
+  const aFS = Math.round(BOX_H * 0.6);
+  selBox(x, top, W - x, Math.round(aFS * 0.72) + 4, Math.round(disp.altsel).toString(), aFS);
+  valueBox(x, H - BOX_H, w, "#19d3ff", disp.baro.toFixed(2));
 }
 
 function vsiTape(g) {
@@ -421,24 +442,23 @@ function headingTape(g) {
   const bh = HDG_FS + 7;                          // short heading box, pinned to the top
   ctx.font = `700 ${HDG_FS}px ${FONT}`;
   const bw = Math.ceil(ctx.measureText("000").width) + 12;   // just wide enough for 3 digits
-  const labelY = bh / 2, tickTop = bh + 2;
+  const labelY = bh / 2;
   const hdg = disp.hdg, span = (W/2)/ppd;
 
   ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,h); ctx.clip();
 
-  // tape labels (aligned with the box) + ticks (hanging just below)
-  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+  // tape labels (aligned with the box, every 10°) + tick marks CLAMPED to the
+  // bottom edge: minor every 1°, 5° marks slightly taller (spec §2.5)
+  ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff";
   ctx.font = `600 ${Math.round(bh*0.6)}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (let d = Math.ceil(hdg-span); d <= hdg+span; d++) {
-    if (d % 5 !== 0) continue;
-    const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd;
-    if (d % 10 === 0) {
-      ctx.beginPath(); ctx.moveTo(x, tickTop); ctx.lineTo(x, tickTop+8); ctx.stroke();
-      if (Math.abs(x - cx) > bw/2 + 15) {
-        const lbl = (dd===0 ? 360 : dd).toString().padStart(3, "0");
-        ctx.fillText(lbl, x, labelY);
-      }
-    } else { ctx.beginPath(); ctx.moveTo(x, tickTop); ctx.lineTo(x, tickTop+5); ctx.stroke(); }
+    const dd = ((d%360)+360)%360, x = cx + (d-hdg)*ppd, major = (d % 5 === 0);
+    ctx.lineWidth = major ? 1.5 : 1;
+    ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, h - (major ? 9 : 5)); ctx.stroke();
+    if (d % 10 === 0 && Math.abs(x - cx) > bw/2 + 15) {
+      const lbl = (dd===0 ? 360 : dd).toString().padStart(3, "0");
+      ctx.fillText(lbl, x, labelY);
+    }
   }
 
   // heading bug (cyan) — same width as the box, slightly shorter; its top-edge
@@ -667,15 +687,7 @@ function hsiReadouts(cx, cy, R) {
   let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
   const shTxt = hb.toString().padStart(3,"0") + "°";
   const bh = Math.round(fs*1.25), bw = BW, bx = W - bw, by = H - bh;
-  ctx.fillStyle = "#000"; ctx.strokeStyle = CYAN; ctx.lineWidth = 1;
-  rrect(bx, by, bw, bh, 3); ctx.fill(); ctx.stroke();
-  // thin heading-bug icon (left)
-  ctx.fillStyle = CYAN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
-  bugPath(bx + 8, by + bh/2, 7, Math.round(bh*0.5), "right", 4, 3); ctx.fill(); ctx.stroke();
-  // heading + degree, right-aligned, snug to the border
-  ctx.fillStyle = CYAN; ctx.font = `700 ${Math.round(bh*0.66)}px ${FONT}`;
-  ctx.textAlign = "right"; ctx.textBaseline = "middle";
-  ctx.fillText(shTxt, bx + bw - 6, by + bh/2 + 1);
+  selBox(bx, by, bw, bh, shTxt, Math.round(bh*0.62));
 }
 
 // ---- PFD wrapper + compositor ----------------------------------------------
@@ -684,7 +696,7 @@ function drawPFD() {
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
   attitude(g);
   pfdCDI(g); turnRate(g);
-  speedTape(g); altTape(g); vsiTape(g); pfdVDI(g);
+  speedTape(g); vsiTape(g); altTape(g); pfdVDI(g);
   headingTape(g);
 }
 
