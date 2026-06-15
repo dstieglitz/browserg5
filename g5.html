@@ -106,6 +106,9 @@ const STYLE_DEFAULTS = {
   baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
   gsBoxH: 24, gsFS: 16,        // ground speed box (PFD)
   altSelBugH: 28,              // selected-altitude tape bug height
+  altTapeFS: 17,               // altimeter tape numerals
+  altTapeTickMaj: 9,           // altimeter 100-ft tick length
+  altTapeTickMin: 5,           // altimeter 20-ft tick length
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
   htBugWPct: 76,       // PFD heading bug width (% of box width)
@@ -129,6 +132,7 @@ let HDG_FS = STYLE.hdgFS;   // synced from STYLE each frame
 
 // developer mode: freeze + component→row hover highlighting
 let devFrozen = false, hitRegions = [], devPanelEl = null;
+let noData = false;   // true when the sim stream is stale → show red-X failures
 function valueBox(x, y, w, color, text, h, fs0) {
   ctx.fillStyle = "#000"; ctx.strokeStyle = color; ctx.lineWidth = 2;
   rrect(x, y, w, h, 4); ctx.fill(); ctx.stroke();
@@ -422,15 +426,16 @@ function speedTape(g) {
 function altTape(g) {
   const x = W - g.altW - g.vsiW, w = g.altW, top = g.aTop, h = g.aH, midY = g.midY;
   ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
+  hit(x, top, w, h, ["altTapeFS", "altTapeTickMaj", "altTapeTickMin"]);
   ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
   ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
-  ctx.font = `600 ${Math.round(g.aH*0.024)}px ${FONT}`;
+  ctx.font = `600 ${STYLE.altTapeFS}px ${FONT}`;
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  const v = disp.alt, span = (h/2)/g.pxFt;
+  const v = disp.alt, span = (h/2)/g.pxFt, tMaj = STYLE.altTapeTickMaj, tMin = STYLE.altTapeTickMin;
   for (let s = Math.ceil((v-span)/20)*20; s <= v+span; s += 20) {
     const y = midY - (s - v) * g.pxFt;
-    if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+9,y); ctx.stroke(); ctx.fillText(s, x+13, y); }
-    else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+5,y); ctx.stroke(); }
+    if (s % 100 === 0) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+tMaj,y); ctx.stroke(); ctx.fillText(s, x+tMaj+4, y); }
+    else { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+tMin,y); ctx.stroke(); }
   }
   // selected-altitude bug (cyan), clipped to the tape; notch cut into the edge
   // facing the scale
@@ -530,12 +535,65 @@ function headingTape(g) {
   hit(0, 0, W, h, ["htBoxH", "hdgFS", "htTickMinor", "htTickMajor", "htBugWPct", "htBugH"]);
 }
 
-function stale() {
-  ctx.fillStyle="rgba(0,0,0,0.62)"; ctx.fillRect(0,0,W,H);
-  ctx.fillStyle="#ff3b30"; ctx.font=`700 ${Math.round(W*0.075)}px ${FONT}`;
-  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("NO DATA", W/2, H/2);
-  ctx.fillStyle="#fff"; ctx.font=`400 ${Math.round(W*0.035)}px ${FONT}`;
-  ctx.fillText("waiting for X-Plane…", W/2, H/2 + H*0.05);
+// ---- no-data failure annunciations (red-X), per the real instruments -------
+const FAIL_MAROON = "#1c0707", FAIL_RED = "#d11a1a", FAIL_YEL = "#ffd21a";
+function failRedX(x, y, w, h) {
+  ctx.strokeStyle = FAIL_RED;
+  ctx.lineWidth = Math.max(7, Math.min(w, h) * 0.13);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const m = ctx.lineWidth * 0.6;   // inset so the rounded caps are clearly visible
+  ctx.beginPath();
+  ctx.moveTo(x + m, y + m); ctx.lineTo(x + w - m, y + h - m);
+  ctx.moveTo(x + w - m, y + m); ctx.lineTo(x + m, y + h - m);
+  ctx.stroke();
+}
+function failStack(str, cx, midY, fs) {   // vertical stacked yellow letters
+  ctx.fillStyle = FAIL_YEL; ctx.font = `700 ${fs}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const lh = fs * 0.92, y0 = midY - (str.length - 1) * lh / 2;
+  for (let i = 0; i < str.length; i++) ctx.fillText(str[i], cx, y0 + i * lh);
+}
+// PFD no-data: red-X over each instrument (fig 1-2). Baro + GS boxes stay.
+function drawPFDFail(g) {
+  const top = g.aTop, h = g.aH, headH = g.headH;
+  const sw = g.spdW, ax0 = g.spdW, ax1 = W - g.altW - g.vsiW, aw = ax1 - ax0;
+  const altX = ax1, altW2 = g.altW + g.vsiW;
+  const panel = (x, y, w, hh) => { ctx.fillStyle = FAIL_MAROON; ctx.fillRect(x, y, w, hh); };
+  // heading band
+  panel(0, 0, W, headH); failRedX(0, 0, W, headH);
+  ctx.fillStyle = FAIL_YEL; ctx.font = `700 ${Math.round(headH * 0.5)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("HEADING FAIL", W / 2, headH / 2);
+  // airspeed (left): AIRSPEED | FAIL
+  panel(0, top, sw, h); failRedX(0, top, sw, h);
+  const vfs = Math.min(16, Math.round(sw * 0.26));
+  failStack("AIRSPEED", sw * 0.32, top + h / 2, vfs);
+  failStack("FAIL", sw * 0.74, top + h / 2, vfs);
+  // attitude (center): red-X + ATTITUDE FAIL + aircraft symbol
+  panel(ax0, top, aw, h); failRedX(ax0, top, aw, h);
+  ctx.fillStyle = FAIL_YEL; ctx.font = `700 ${Math.round(aw * 0.12)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("ATTITUDE", W / 2, top + h * 0.3);
+  ctx.fillText("FAIL", W / 2, top + h * 0.3 + aw * 0.13);
+  aircraft({ cx: W / 2, cy: top + h * 0.58, aH: h });
+  // altimeter (right): ALTITUDE | FAIL
+  panel(altX, top, altW2, h); failRedX(altX, top, altW2, h);
+  failStack("ALTITUDE", altX + altW2 * 0.3, top + h / 2, vfs);
+  failStack("FAIL", altX + altW2 * 0.72, top + h / 2, vfs);
+  // baro (valid pilot setting) + GS boxes remain
+  valueBox(altX, H - STYLE.baroBoxH, STYLE.baroBoxW, "#19d3ff", disp.baro.toFixed(2), STYLE.baroBoxH, STYLE.baroFS);
+  valueBox(0, H - STYLE.gsBoxH, sw, "#9aa0a6", "GS", STYLE.gsBoxH, STYLE.gsFS);
+  failRedX(0, H - STYLE.gsBoxH, sw, STYLE.gsBoxH);
+}
+// HSI no-data: red-X over the rose + amber HDG flag (figs 1-3 / 1-9).
+function drawHSIFail(cx, cy, R) {
+  failRedX(cx - R, cy - R, R * 2, R * 2);
+  ctx.fillStyle = "#ffb000"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = `700 ${Math.round(R * 0.16)}px ${FONT}`;
+  // amber HDG flag at the top lubber
+  ctx.fillStyle = "#000"; ctx.fillRect(cx - R * 0.18, cy - R - R * 0.02, R * 0.36, R * 0.22);
+  ctx.fillStyle = "#ffb000"; ctx.fillText("HDG", cx, cy - R + R * 0.08);
+  ctx.font = `700 ${Math.round(R * 0.2)}px ${FONT}`;
+  ctx.fillText("HEADING", cx, cy - R * 0.14);
+  ctx.fillText("FAIL", cx, cy + R * 0.14);
 }
 
 // ---- HSI mode --------------------------------------------------------------
@@ -552,6 +610,7 @@ function drawHSI(unit) {
   const top = M + boxH, bot = H - M;
   const R = Math.min((W - 2 * M) / 2, (bot - top) / 2);
   const cy = (top + bot) / 2;
+  if (noData) { drawHSIFail(cx, cy, R); return; }
 
   // rotating compass card
   ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(-disp.hdg));
@@ -739,6 +798,7 @@ function hsiReadouts(cx, cy, R) {
 function drawPFD() {
   const g = L();
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
+  if (noData) { drawPFDFail(g); return; }
   attitude(g);
   pfdCDI(g); turnRate(g);
   speedTape(g); vsiTape(g); altTape(g); pfdVDI(g);
@@ -759,6 +819,7 @@ function frame(now) {
   const dt = Math.min(0.1, (now - prevT)/1000); prevT = now;
   HDG_FS = STYLE.hdgFS;   // pick up live style edits
   hitRegions = [];
+  noData = (!target.live || (performance.now() - lastData > 2000));
   if (!devFrozen) {   // dev mode freezes all motion so the display can be inspected
   disp.pitch = approach(disp.pitch, target.pitch, dt, 12);
   disp.roll  = approach(disp.roll,  target.roll,  dt, 12);
@@ -794,7 +855,6 @@ function frame(now) {
     const half = Math.round(RH / 2);
     ctx.beginPath(); ctx.moveTo(0, half); ctx.lineTo(RW, half); ctx.stroke();
   }
-  if (!target.live || (performance.now() - lastData > 2000)) { W = RW; H = RH; stale(); }
   W = RW; H = RH;
   for (let i = 0; i < units.length; i++) {
     const r = unitRegion(i);
