@@ -374,8 +374,8 @@ function altTape(g) {
   // selected-altitude bug (cyan), clipped to the tape — same height as the
   // altitude readout box (BOX_H); notch cut into the edge facing the scale
   const yb = midY - (disp.altsel - v) * g.pxFt;
-  ctx.fillStyle = "#19d3ff";
-  bugPath(x + 7, yb, 14, BOX_H, "right", 10, 5); ctx.fill();
+  ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  bugPath(x + 7, yb, 14, BOX_H, "right", 10, 5); ctx.fill(); ctx.stroke();
   ctx.restore();
   readout(x, midY, w, Math.round(v).toString(), "left");
   // selected-altitude box (top) + barometric setting box (bottom), both cyan,
@@ -441,12 +441,12 @@ function headingTape(g) {
     } else { ctx.beginPath(); ctx.moveTo(x, tickTop); ctx.lineTo(x, tickTop+5); ctx.stroke(); }
   }
 
-  // heading bug (cyan) — fills the tape height below the box; notch cut out of
-  // the TOP edge (facing the heading box/scale)
+  // heading bug (cyan) — same width as the box, slightly shorter; its top-edge
+  // notch mirrors the box's tab so the two interlock ("two parts of a whole")
   const dh = ((disp.hdgbug - hdg + 540) % 360) - 180, xb = cx + dh * ppd;
-  const by = bh, byb = h - 1, bcy = (by + byb) / 2, bhh = byb - by;
-  ctx.fillStyle = "#19d3ff";
-  bugPath(xb, bcy, 18, bhh, "up", 7, 6); ctx.fill();
+  const hbh = bh - 4;
+  ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  bugPath(xb, bh + hbh / 2, bw * 0.75, hbh, "up", 7, 6); ctx.fill(); ctx.stroke();
 
   // current ground-track triangle (magenta) at the bottom of the band, pointing up
   const dt = ((disp.trk - hdg + 540) % 360) - 180, xt = cx + dt * ppd;
@@ -483,7 +483,11 @@ const HSI = { navsrc: "GPS", navcolor: MAG, cdiscale: "ENR", msg: "", obs: false
 
 function drawHSI(unit) {
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-  const cx = W/2, cy = H*0.54, R = Math.min(W*0.92, H*0.78) * 0.46;
+  // fill the display: only a few px of margin, with room at the top for the box
+  const M = 4, boxH = HDG_FS + 12, cx = W / 2;
+  const top = M + boxH, bot = H - M;
+  const R = Math.min((W - 2 * M) / 2, (bot - top) / 2);
+  const cy = (top + bot) / 2;
 
   // rotating compass card
   ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad(-disp.hdg));
@@ -507,10 +511,13 @@ function drawHSI(unit) {
   }
   ctx.restore();
 
-  // heading bug (cyan) on the ring — notch cut out of the outer (rim) edge
+  // heading bug (cyan) on the rim — same width as the HSI heading box, slightly
+  // shorter; outer-edge notch mirrors the box's tab ("two parts of a whole")
   rosePointer(cx, cy, R, disp.hdgbug - disp.hdg, () => {
-    ctx.fillStyle = CYAN;
-    bugPath(0, -R + 7, 18, 14, "up", 6, 6); ctx.fill();
+    ctx.font = `700 ${HDG_FS + 2}px ${FONT}`;
+    const hbw = (Math.ceil(ctx.measureText("000°").width) + 12) * 0.75, hbh = 13;
+    ctx.fillStyle = CYAN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+    bugPath(0, -R + hbh / 2, hbw, hbh, "up", 7, 6); ctx.fill(); ctx.stroke();
   });
   // current ground track — magenta triangle at the rim + dashed radial line
   // (spec §2.2.1 / fig 2-15)
