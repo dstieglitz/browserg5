@@ -32,6 +32,7 @@
 <div id="tap">
   <div id="nofly">NOT FOR NAVIGATION</div>
   <span class="tapmsg">Tap to start G5
+    <span class="hint">Once running, <b>tap the screen</b> to open Display settings — use the edge arrows to size the image so it clears your device’s bezels.</span>
     <span class="hint">For true fullscreen: Share → Add to Home Screen, then launch from the icon. Keeps the screen awake while running.</span>
   </span>
 </div>
@@ -54,8 +55,20 @@ const ASI = {
 };
 let asiTrend = 0, prevIas = 0;   // predicted airspeed change over next 6 s
 
-// display mode: ?mode=pfd | hsi | both  (default both = PFD on top, HSI below)
-const MODE = (location.search.match(/[?&]mode=(pfd|hsi|both)/) || [,"both"])[1];
+// ---- app display config (phone-side; separate from operating the avionics) --
+// Persisted settings for the *display app* — mode, dimming, keep-awake. A tap on
+// the screen opens the config menu below; it never touches the simulated G5
+// knob/menu (that comes only from the ifr-1 bridge via g5Input).
+const CFG_KEY = "g5cfg";
+function loadCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch (_) { return {}; } }
+const cfg = Object.assign({ keepAwake: true, inset: { top: 0, right: 0, bottom: 0, left: 0 } }, loadCfg());
+cfg.inset = Object.assign({ top: 0, right: 0, bottom: 0, left: 0 }, cfg.inset);
+function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (_) {} }
+let openCfg = () => {};      // assigned when the config menu is built
+let cfgShown = false;        // config menu currently visible
+
+// display mode: saved config wins, else ?mode=pfd | hsi | both (default both)
+let MODE = cfg.mode || (location.search.match(/[?&]mode=(pfd|hsi|both)/) || [,"both"])[1];
 
 // Fields the knob has taken local control of are not overwritten by the sim
 // stream (the simulated unit is authoritative for what its knob sets).
@@ -76,11 +89,21 @@ function connect() {
 const cvs = document.getElementById("g5");
 const ctx = cvs.getContext("2d");
 let W = 0, H = 0, DPR = 1, RW = 0, RH = 0;   // RW/RH = real canvas; W/H = current instrument
+// Drawable viewport inside the canvas — shrunk from each edge by cfg.inset so the
+// display can be sized to clear bezels/notches on any device. Margins stay black.
+let VX = 0, VY = 0, VW = 0, VH = 0;
+function layoutViewport() {
+  const n = cfg.inset;
+  VX = n.left; VY = n.top;
+  VW = Math.max(120, RW - n.left - n.right);
+  VH = Math.max(120, RH - n.top - n.bottom);
+}
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 3);
   RW = W = window.innerWidth; RH = H = window.innerHeight;
   cvs.width = Math.round(RW * DPR); cvs.height = Math.round(RH * DPR);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layoutViewport();
 }
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", () => setTimeout(resize, 200));
@@ -140,6 +163,24 @@ let HDG_FS = STYLE.hdgFS;   // synced from STYLE each frame
 // developer mode: freeze + component→row hover highlighting
 let devFrozen = false, hitRegions = [], devPanelEl = null;
 let noData = false;   // true when the sim stream is stale → show red-X failures
+
+// altitude alerting (spec §2.3.2): flash the selected-altitude box for 5 s when
+// passing within 1000 ft / 200 ft, and turn it yellow + flash when leaving the
+// ±200 ft band after capture. Reset whenever the selected altitude changes.
+let altAlertTimer = 0, altAlertYellow = false, altCaptured = false, altPrevSel = null, altPrevDev = Infinity;
+function updateAltAlert(dt) {
+  const sel = target.altsel, dev = Math.abs(target.alt - sel);
+  if (sel !== altPrevSel) { altPrevSel = sel; altCaptured = false; altAlertTimer = 0; altAlertYellow = false; altPrevDev = dev; }
+  if (altPrevDev > 1000 && dev <= 1000) { altAlertTimer = 5; altAlertYellow = false; }
+  if (altPrevDev > 200  && dev <= 200)  { altAlertTimer = 5; altAlertYellow = false; }
+  if (dev <= 200) altCaptured = true;
+  if (altCaptured && altPrevDev <= 200 && dev > 200) { altAlertTimer = 5; altAlertYellow = true; }
+  altPrevDev = dev;
+  if (altAlertTimer > 0) altAlertTimer = Math.max(0, altAlertTimer - dt);
+}
+function altAlert() {
+  return { flash: altAlertTimer > 0, yellow: altAlertYellow, on: (performance.now() % 700) < 470 };
+}
 function valueBox(x, y, w, color, text, h, fs0) {
   ctx.fillStyle = "#000"; ctx.strokeStyle = color; ctx.lineWidth = 2;
   rrect(x, y, w, h, 4); ctx.fill(); ctx.stroke();
@@ -175,13 +216,13 @@ function bugPath(cx, cy, w, h, face, nd, nh) {
 // Cyan "selected" box (selected altitude on the PFD, selected heading on the
 // HSI): thin cyan border, a small bug icon on the left, value right-aligned.
 // Identical look in both places — the heading one just passes a value with "°".
-function selBox(x, y, w, h, value, numFS) {
-  ctx.fillStyle = "#000"; ctx.strokeStyle = "#19d3ff"; ctx.lineWidth = 1;
+function selBox(x, y, w, h, value, numFS, color = "#19d3ff") {
+  ctx.fillStyle = "#000"; ctx.strokeStyle = color; ctx.lineWidth = 1;
   rrect(x, y, w, h, 3); ctx.fill(); ctx.stroke();
   const iconX = x + 8, iconW = 7;
-  ctx.fillStyle = "#19d3ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  ctx.fillStyle = color; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
   bugPath(iconX, y + h / 2, iconW, Math.round(h * 0.5), "right", 4, 3); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#19d3ff";
+  ctx.fillStyle = color;
   let fs = numFS; const avail = (x + w - 6) - (iconX + iconW + 4);
   ctx.font = `700 ${fs}px ${FONT}`;
   while (ctx.measureText(value).width > avail && fs > 8) { fs--; ctx.font = `700 ${fs}px ${FONT}`; }
@@ -571,7 +612,10 @@ function altTape(g) {
   hit(x, midY - STYLE.altBoxH/2, w, STYLE.altBoxH, ["altBoxH", "altBoxFS", "altBoxFS2"]);
   // selected altitude — extends to the right edge of the screen; the box hugs
   // the number (~1px), font size unchanged
-  selBox(x, top, W - x, STYLE.altSelBoxH, Math.round(disp.altsel).toString(), STYLE.altSelFS);
+  const aa = altAlert();   // flash/yellow per spec §2.3.2 altitude alerting
+  if (!aa.flash || aa.on)  // during a flash, draw only in the "on" blink phase
+    selBox(x, top, W - x, STYLE.altSelBoxH, Math.round(disp.altsel).toString(),
+           STYLE.altSelFS, aa.yellow ? "#ffd21a" : "#19d3ff");
   hit(x, top, W - x, STYLE.altSelBoxH, ["altSelFS", "altSelBoxH", "altSelBugH"]);
   valueBox(x, H - STYLE.baroBoxH, STYLE.baroBoxW, "#19d3ff", disp.baro.toFixed(2), STYLE.baroBoxH, STYLE.baroFS);
   hit(x, H - STYLE.baroBoxH, STYLE.baroBoxW, STYLE.baroBoxH, ["baroBoxH", "baroFS", "baroBoxW"]);
@@ -1054,6 +1098,7 @@ function frame(now) {
   disp.trk    = approachAngle(disp.trk, target.trk, dt, 8);
   disp.crs    = approachAngle(disp.crs, target.crs, dt, 8);
   disp.brg    = approachAngle(disp.brg, target.brg, dt, 8);
+  updateAltAlert(dt);
   }
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -1064,8 +1109,8 @@ function frame(now) {
   }
   if (units.length === 2) {
     ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
-    const half = Math.round(RH / 2);
-    ctx.beginPath(); ctx.moveTo(0, half); ctx.lineTo(RW, half); ctx.stroke();
+    const half = Math.round(VY + VH / 2);
+    ctx.beginPath(); ctx.moveTo(VX, half); ctx.lineTo(VX + VW, half); ctx.stroke();
   }
   W = RW; H = RH;
   for (let i = 0; i < units.length; i++) {
@@ -1100,18 +1145,22 @@ function makeUnit(id, page) {
   return { id, page, ui: { mode: "closed", idx: 1, edit: null }, bearingSrc: 1 };
 }
 // Position-based ids so the bridge mapping is stable regardless of page config.
-const units = MODE === "both"
-  ? [makeUnit("TOP_G5", "pfd"), makeUnit("BOTTOM_G5", "hsi")]
-  : [makeUnit("TOP_G5", MODE)];
-const unitById = Object.fromEntries(units.map((u) => [u.id, u]));
+let units, unitById;
+function buildUnits() {
+  units = MODE === "both"
+    ? [makeUnit("TOP_G5", "pfd"), makeUnit("BOTTOM_G5", "hsi")]
+    : [makeUnit("TOP_G5", MODE)];
+  unitById = Object.fromEntries(units.map((u) => [u.id, u]));
+}
+buildUnits();
 let hoverIdx = -1;                                       // unit under cursor (testing aid)
 
 function unitRegion(i) {
-  if (units.length === 1) return { x: 0, y: 0, w: RW, h: RH };
-  const half = Math.round(RH / 2);
-  return i === 0 ? { x: 0, y: 0, w: RW, h: half } : { x: 0, y: half, w: RW, h: RH - half };
+  if (units.length === 1) return { x: VX, y: VY, w: VW, h: VH };
+  const half = Math.round(VH / 2);
+  return i === 0 ? { x: VX, y: VY, w: VW, h: half } : { x: VX, y: VY + half, w: VW, h: VH - half };
 }
-const unitIndexAt = (py) => (units.length === 1 ? 0 : (py < RH / 2 ? 0 : 1));
+const unitIndexAt = (py) => (units.length === 1 ? 0 : (py < VY + VH / 2 ? 0 : 1));
 
 function menuItems(u) {
   return u.page === "hsi"
@@ -1161,7 +1210,10 @@ function dispatchBridgeInputs(d) {
   if (Array.isArray(d && d._inputs)) for (const ev of d._inputs) g5Input(ev.unit, ev.action);
 }
 
-// --- mouse source (TESTING ONLY): route by hovered unit ---------------------
+// --- input sources -----------------------------------------------------------
+// A tap NEVER operates the avionics. A simple tap opens the display-config menu;
+// the G5 knob (turn/press) comes only from the ifr-1 bridge via g5Input(). The
+// mouse wheel + Arrow/Enter keys are a DESKTOP TESTING stand-in for the knob.
 let wheelAccum = 0, wheelUnit = -1;
 cvs.addEventListener("wheel", (e) => {
   e.preventDefault();
@@ -1177,7 +1229,27 @@ cvs.addEventListener("wheel", (e) => {
   }
   if (detents === 4) wheelAccum = 0;                       // drop leftover from a big flick
 }, { passive: false });
-cvs.addEventListener("mousedown", (e) => { if (e.button === 0) { e.preventDefault(); g5Input(unitIndexAt(e.clientY), "press"); } });
+// A finger tap (touch) opens the display-fit menu — phone-only. A mouse click is
+// the DESKTOP TESTING stand-in for the knob press (touch never operates avionics).
+let tapX = 0, tapY = 0, tapId = -1;
+cvs.addEventListener("pointerdown", (e) => { tapId = e.pointerId; tapX = e.clientX; tapY = e.clientY; });
+cvs.addEventListener("pointerup", (e) => {
+  if (e.pointerId !== tapId) return;
+  tapId = -1;
+  if (devFrozen || cfgShown) return;
+  if (Math.hypot(e.clientX - tapX, e.clientY - tapY) > 12) return;        // a drag, not a tap/click
+  if (e.pointerType === "touch") openCfg();                               // phone: display-fit menu
+  else if (e.button === 0) g5Input(unitIndexAt(e.clientY), "press");      // desktop mouse: knob press (testing)
+});
+// desktop testing stand-in for the physical knob (acts on the hovered unit):
+addEventListener("keydown", (e) => {
+  if (devFrozen || cfgShown || e.metaKey || e.ctrlKey ||
+      /^(INPUT|TEXTAREA)$/.test((e.target || {}).tagName)) return;
+  const i = hoverIdx < 0 ? 0 : hoverIdx;
+  if (e.key === "Enter")          { e.preventDefault(); g5Input(i, "press"); }
+  else if (e.key === "ArrowUp")   { e.preventDefault(); g5Input(i, "cw");  }
+  else if (e.key === "ArrowDown") { e.preventDefault(); g5Input(i, "ccw"); }
+});
 cvs.addEventListener("mousemove", (e) => {
   hoverIdx = unitIndexAt(e.clientY);
   if (devFrozen) {   // highlight the panel row(s) for the component under the cursor
@@ -1325,13 +1397,76 @@ function drawHover(reg) {
   if (/[?&]dev/.test(location.search)) setVis(true);
 })();
 
+// ---- display fit menu (opened by a screen tap) -----------------------------
+// Each edge has two buttons that move that edge of the drawable viewport in/out,
+// so the image can be sized to clear bezels/notches. OK in the center closes.
+function nudgeEdge(edge, grow) {
+  const step = 6, d = grow ? -step : step;
+  const lim = (edge === "top" || edge === "bottom")
+    ? Math.max(0, Math.floor(RH / 2) - 60) : Math.max(0, Math.floor(RW / 2) - 60);
+  cfg.inset[edge] = clamp(cfg.inset[edge] + d, 0, lim);
+  layoutViewport(); saveCfg();
+}
+(function () {
+  const style = document.createElement("style");
+  style.textContent =
+    "#cfg .eb{width:54px;height:44px;border-radius:9px;border:1px solid #3a3f48;background:#1d2026;color:#e8eaed;font:600 20px " + FONT + ";touch-action:none;}" +
+    "#cfg .eb:active{background:#0d3b66;border-color:#19d3ff;}" +
+    "#cfg .grp{display:flex;gap:8px;}" +
+    "#cfg #cfgOK{width:88px;height:88px;border-radius:50%;border:2px solid #19d3ff;background:#0d3b66;color:#fff;font:700 18px " + FONT + ";}";
+  document.head.appendChild(style);
+
+  const menu = document.createElement("div");
+  menu.id = "cfg";
+  menu.style.cssText = "position:fixed;inset:0;z-index:20;display:none;background:rgba(0,0,0,0.5);" +
+    "align-items:center;justify-content:center;";
+  menu.innerHTML =
+    '<div style="position:fixed;top:22vh;left:0;right:0;padding:0 8vw;text-align:center;color:#cfd3d8;' +
+      'font:600 15px ' + FONT + ';letter-spacing:0.03em;line-height:1.4;">Size the display to clear your device’s bezels — OK when done</div>' +
+    '<div style="display:grid;grid-template-columns:auto auto auto;grid-template-rows:auto auto auto;' +
+      'gap:20px;align-items:center;justify-items:center;">' +
+      '<div></div><div class="grp" id="gTop"></div><div></div>' +
+      '<div class="grp" id="gLeft"></div><button id="cfgOK">OK</button><div class="grp" id="gRight"></div>' +
+      '<div></div><div class="grp" id="gBottom"></div><div></div>' +
+    '</div>';
+  document.body.appendChild(menu);
+
+  const g = (id) => menu.querySelector(id);
+  function holdRepeat(btn, fn) {
+    let iv = null;
+    const stop = () => { if (iv) { clearInterval(iv); iv = null; } };
+    btn.addEventListener("pointerdown", (e) => { e.preventDefault(); fn(); stop(); iv = setInterval(fn, 90); });
+    ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => btn.addEventListener(ev, stop));
+  }
+  function addBtn(group, label, edge, grow) {
+    const b = document.createElement("button");
+    b.className = "eb"; b.textContent = label;
+    holdRepeat(b, () => nudgeEdge(edge, grow));
+    group.appendChild(b);
+  }
+  // outward arrow = grow toward the screen edge; inward arrow = shrink
+  addBtn(g("#gTop"),    "▲", "top",    true);  addBtn(g("#gTop"),    "▼", "top",    false);
+  addBtn(g("#gBottom"), "▲", "bottom", false); addBtn(g("#gBottom"), "▼", "bottom", true);
+  addBtn(g("#gLeft"),   "◀", "left",   true);  addBtn(g("#gLeft"),   "▶", "left",   false);
+  addBtn(g("#gRight"),  "◀", "right",  false); addBtn(g("#gRight"),  "▶", "right",  true);
+
+  function close() { menu.style.display = "none"; cfgShown = false; }
+  g("#cfgOK").addEventListener("click", close);
+  menu.addEventListener("click", (e) => { if (e.target === menu) close(); });   // tap backdrop closes
+  openCfg = () => { menu.style.display = "flex"; cfgShown = true; };
+})();
+
 // ---- wake lock + start -----------------------------------------------------
 let wakeLock = null;
 async function keepAwake() { try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch(_){} }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+function applyKeepAwake() {
+  if (cfg.keepAwake) keepAwake();
+  else if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") applyKeepAwake(); });
 function start() {
   document.getElementById("tap").style.display = "none";
-  resize(); keepAwake(); connect();
+  resize(); applyKeepAwake(); connect();
   // if (cvs.requestFullscreen) cvs.requestFullscreen().catch(()=>{});  // disabled for now
   requestAnimationFrame(frame);
 }

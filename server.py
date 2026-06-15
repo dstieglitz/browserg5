@@ -77,7 +77,7 @@ def _demo_loop():
             "pitch": 7.0 * math.sin(t * 0.25),
             "roll": 22.0 * math.sin(t * 0.18),
             "ias": 105.0 + 12.0 * math.sin(t * 0.12),
-            "alt": 3000.0 + 200.0 * math.sin(t * 0.08),
+            "alt": 3000.0 + 350.0 * math.sin(t * 0.08),  # swings across ±200 band → exercises alt alerting
             "vsi": 700.0 * math.cos(t * 0.08),
             "hdg": (t * 4.0) % 360.0,
             "slip": 1.5 * math.sin(t * 0.5),
