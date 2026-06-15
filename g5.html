@@ -642,26 +642,40 @@ function hsiVDI(cx, cy, R) {
 }
 
 function hsiReadouts(cx, cy, R) {
-  const pad = Math.round(W*0.03), fs = Math.round(W*0.05);
-  // DIST top-right
-  ctx.textBaseline = "top"; ctx.textAlign = "right";
-  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.55)}px ${FONT}`;
-  ctx.fillText("DIST NM", W - pad, pad);
-  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.fillText(Math.round(disp.dist).toString(), W - pad, pad + fs*0.65);
-  // GS bottom-left
-  ctx.textAlign = "left";
-  ctx.fillStyle = "#9aa0a6"; ctx.font = `600 ${Math.round(fs*0.55)}px ${FONT}`;
-  ctx.fillText("GS KT", pad, H - pad - fs*1.05);
-  ctx.fillStyle = MAG; ctx.font = `700 ${fs}px ${FONT}`;
-  ctx.textBaseline = "bottom"; ctx.fillText(Math.round(disp.gs).toString(), pad, H - pad);
-  // selected heading bottom-right (cyan box)
+  const fs = Math.round(W*0.05);
+  const labFS = Math.round(fs*0.5), numFS = Math.round(fs*0.82);
+  const BW = Math.round(fs*4.0);          // shared box width (DIST, GS, heading)
+  // grey-bordered box with the label INSIDE (white, top) over a magenta number.
+  // anchorX/anchorY is the corner; corner string picks which corner to clamp to.
+  const dataBox = (label, value, anchorX, anchorY, corner, w) => {
+    const h = labFS + numFS + 9;
+    const x = corner.includes("right") ? anchorX - w : anchorX;
+    const y = corner.includes("bottom") ? anchorY - h : anchorY;
+    ctx.fillStyle = "#000"; ctx.strokeStyle = "#9aa0a6"; ctx.lineWidth = 1;
+    rrect(x, y, w, h, 3); ctx.fill(); ctx.stroke();
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "#e8eaed"; ctx.font = `600 ${labFS}px ${FONT}`;
+    ctx.fillText(label, x + w/2, y + labFS*0.5 + 4);
+    ctx.fillStyle = MAG; ctx.font = `700 ${numFS}px ${FONT}`;
+    ctx.fillText(value, x + w/2, y + h - numFS*0.5 - 4);
+  };
+  dataBox("DIST NM", Math.round(disp.dist).toString(), W, 0, "topright", BW);
+  dataBox("GS KT", Math.round(disp.gs).toString(), 0, H, "bottomleft", Math.round(BW*0.97));
+
+  // selected heading (bottom-right) — wide, short cyan box; thin bug icon + 060°,
+  // only a few px between the number and the border
   let hb = Math.round(((disp.hdgbug%360)+360)%360); if (hb===0) hb=360;
-  const bw = fs*2.7, bh = fs*1.35, bx = W - pad - bw, by = H - pad - bh;
-  ctx.fillStyle = "#000"; ctx.strokeStyle = CYAN; ctx.lineWidth = 2; rrect(bx, by, bw, bh, 3); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = CYAN; ctx.font = `700 ${Math.round(bh*0.58)}px ${FONT}`;
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(hb.toString().padStart(3,"0")+"°", bx + bw/2, by + bh/2 + 1);
+  const shTxt = hb.toString().padStart(3,"0") + "°";
+  const bh = Math.round(fs*1.25), bw = BW, bx = W - bw, by = H - bh;
+  ctx.fillStyle = "#000"; ctx.strokeStyle = CYAN; ctx.lineWidth = 1;
+  rrect(bx, by, bw, bh, 3); ctx.fill(); ctx.stroke();
+  // thin heading-bug icon (left)
+  ctx.fillStyle = CYAN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+  bugPath(bx + 8, by + bh/2, 7, Math.round(bh*0.5), "right", 4, 3); ctx.fill(); ctx.stroke();
+  // heading + degree, right-aligned, snug to the border
+  ctx.fillStyle = CYAN; ctx.font = `700 ${Math.round(bh*0.66)}px ${FONT}`;
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  ctx.fillText(shTxt, bx + bw - 6, by + bh/2 + 1);
 }
 
 // ---- PFD wrapper + compositor ----------------------------------------------
