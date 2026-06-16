@@ -89,14 +89,23 @@ function connect() {
 const cvs = document.getElementById("g5");
 const ctx = cvs.getContext("2d");
 let W = 0, H = 0, DPR = 1, RW = 0, RH = 0;   // RW/RH = real canvas; W/H = current instrument
-// Drawable viewport inside the canvas — shrunk from each edge by cfg.inset so the
-// display can be sized to clear bezels/notches on any device. Margins stay black.
+// Drawable viewport inside the canvas. Locked to the real G5 aspect ratio — the
+// Garmin G5 display is 320×240 px (QVGA, 4:3); `both` stacks two units → 320:480.
+// The largest aspect-correct rect is centered in the window; the rest stays black
+// (letterbox/pillarbox). cfg.inset shrinks the available area first (bezel fit).
+const G5_W = 320, G5_H = 240;
 let VX = 0, VY = 0, VW = 0, VH = 0;
 function layoutViewport() {
   const n = cfg.inset;
-  VX = n.left; VY = n.top;
-  VW = Math.max(120, RW - n.left - n.right);
-  VH = Math.max(120, RH - n.top - n.bottom);
+  const ax = n.left, ay = n.top;
+  const aw = Math.max(120, RW - n.left - n.right);
+  const ah = Math.max(120, RH - n.top - n.bottom);
+  const aspect = (MODE === "both") ? G5_W / (2 * G5_H) : G5_W / G5_H;   // content width : height
+  let vw = aw, vh = Math.round(aw / aspect);
+  if (vh > ah) { vh = ah; vw = Math.round(ah * aspect); }               // fit, preserving aspect
+  VW = vw; VH = vh;
+  VX = ax + Math.round((aw - vw) / 2);                                  // center → equal borders
+  VY = ay + Math.round((ah - vh) / 2);
 }
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 3);
@@ -137,6 +146,7 @@ const STYLE_DEFAULTS = {
   asiTapeTickMaj: 7,           // airspeed 10-kt tick length
   asiTapeTickMin: 4,           // airspeed 5-kt tick length
   pitchLabFS: 16,              // PFD pitch-ladder degree labels (10/20/30) — climb/descent angle digits
+  spdTapeW: 84, altTapeW: 104, // PFD side-tape FIXED widths (px) — center attitude absorbs the rest
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
   htBugWPct: 76,       // PFD heading bug width (% of box width)
@@ -325,13 +335,12 @@ function L() {
   const aTop = headH, aBot = H - botH;
   const aH = aBot - aTop;
   const vsiW = 18;
-  // Center section spans just past the bank arc (and the aircraft level markers);
-  // the airspeed/altitude tapes fill the rest, symmetric about cx.
-  const arcReach = (aH * 0.40 + 13) * 0.866;                 // x-reach of the 60° roll tick (rollScale R=aH*0.40)
-  const markReach = STYLE.acMarkGap + STYLE.acMarkLen + 6;   // keep the level markers clear of the tapes
-  const centerHalf = Math.max(arcReach, markReach) + clamp(W * 0.01, 6, 14);
-  const spdW = clamp(Math.round(W / 2 - centerHalf), 54, Math.round(W * 0.34));
-  const altW = Math.max(54, Math.round((spdW - vsiW) * 1.15 + STYLE.altBoxFS * 0.62));  // 15% wider + one digit of room for 10k+ ft
+  // Side tapes are FIXED width (dev-tunable) so they never shrink; the center
+  // attitude absorbs width changes (it can compress down to the bank arc, which
+  // sets the minimum sensible width).
+  const arcReach = (aH * 0.40 + 13) * 0.866;                 // x-reach of the 60° roll tick (the center's floor)
+  const spdW = clamp(STYLE.spdTapeW, 40, Math.round(W / 2 - arcReach));
+  const altW = clamp(STYLE.altTapeW, 40, Math.round(W / 2 - vsiW - arcReach));
   return {
     headH, botH, aTop, aBot, aH,
     cx: W / 2,
@@ -554,7 +563,7 @@ function slipBall(g) {
 function speedTape(g) {
   const x = 0, w = g.spdW, top = g.aTop, h = g.aH, midY = g.midY;
   ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
-  hit(x, top, w, h, ["asiTapeFS", "asiTapeTickMaj", "asiTapeTickMin"]);
+  hit(x, top, w, h, ["spdTapeW", "asiTapeFS", "asiTapeTickMaj", "asiTapeTickMin"]);
   ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
   const v = disp.ias, span = (h/2)/g.pxKt;
   const sy = (s) => midY - (s - v) * g.pxKt;
@@ -619,7 +628,7 @@ function speedTape(g) {
 function altTape(g) {
   const x = W - g.altW - g.vsiW, w = g.altW, top = g.aTop, h = g.aH, midY = g.midY;
   ctx.fillStyle = "rgba(15,15,18,0.55)"; ctx.fillRect(x, top, w, h);
-  hit(x, top, w, h, ["altTapeFS", "altTapeTickMaj", "altTapeTickMin"]);
+  hit(x, top, w, h, ["altTapeW", "altTapeFS", "altTapeTickMaj", "altTapeTickMin"]);
   ctx.save(); ctx.beginPath(); ctx.rect(x, top, w, h); ctx.clip();
   ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
   ctx.font = `600 ${STYLE.altTapeFS}px ${FONT}`;
