@@ -146,7 +146,7 @@ const STYLE_DEFAULTS = {
   asiTapeTickMaj: 7,           // airspeed 10-kt tick length
   asiTapeTickMin: 4,           // airspeed 5-kt tick length
   pitchLabFS: 16,              // PFD pitch-ladder degree labels (10/20/30) — climb/descent angle digits
-  spdTapeW: 84, altTapeW: 104, // PFD side-tape FIXED widths (px) — center attitude absorbs the rest
+  spdTapeW: 84, altTapeW: 95, // PFD side-tape FIXED widths (px) — center attitude absorbs the rest
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
   htBugWPct: 76,       // PFD heading bug width (% of box width)
@@ -336,11 +336,10 @@ function L() {
   const aH = aBot - aTop;
   const vsiW = 18;
   // Side tapes are FIXED width (dev-tunable) so they never shrink; the center
-  // attitude absorbs width changes (it can compress down to the bank arc, which
-  // sets the minimum sensible width).
-  const arcReach = (aH * 0.40 + 13) * 0.866;                 // x-reach of the 60° roll tick (the center's floor)
-  const spdW = clamp(STYLE.spdTapeW, 40, Math.round(W / 2 - arcReach));
-  const altW = clamp(STYLE.altTapeW, 40, Math.round(W / 2 - vsiW - arcReach));
+  // attitude absorbs the rest. Capped only at ~42% each so the two tapes + VSI
+  // can't meet in the middle (a wide tape may overlap the outer roll-arc ticks).
+  const spdW = clamp(STYLE.spdTapeW, 40, Math.round(W * 0.42));
+  const altW = clamp(STYLE.altTapeW, 40, Math.round(W * 0.42));
   return {
     headH, botH, aTop, aBot, aH,
     cx: W / 2,
@@ -1160,11 +1159,20 @@ function drawPFD() {
   hdgWindow(g);
 }
 
+// Baked design reference: a unit is laid out as if UI_REF_H px tall (the size the
+// STYLE values were tuned at) and uniformly scaled to fill its region, so every
+// font/box/tape scales together and all tuned ratios are preserved. Scale = 1.0
+// when the unit renders at UI_REF_H px.
+const UI_REF_H = 316;
 function renderInto(unit, x, y, w, h) {
   ctx.save(); ctx.translate(x, y);
   ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
-  const sw = W, sh = H; W = w; H = h;
+  const s = h / UI_REF_H;
+  ctx.scale(s, s);
+  const sw = W, sh = H; W = w / s; H = h / s;
   if (unit.page === "pfd") drawPFD(unit); else drawHSI(unit);
+  drawUnitMenu(unit, { x: 0, y: 0, w: W, h: H });   // menus/dialogs scale with the unit
+  drawEditDialog(unit, { x: 0, y: 0, w: W, h: H });
   W = sw; H = sh; ctx.restore();
 }
 
@@ -1219,12 +1227,7 @@ function frame(now) {
     const half = Math.round(VY + VH / 2);
     ctx.beginPath(); ctx.moveTo(VX, half); ctx.lineTo(VX + VW, half); ctx.stroke();
   }
-  W = RW; H = RH;
-  for (let i = 0; i < units.length; i++) {
-    const r = unitRegion(i);
-    drawUnitMenu(units[i], r);
-    drawEditDialog(units[i], r);
-  }
+  W = RW; H = RH;   // menus/dialogs are drawn inside renderInto now (scaled with the unit)
   drawFocus();
   if (units.length === 2 && hoverIdx >= 0) drawHover(unitRegion(hoverIdx));
   if (dbgOn) updateDbg();
@@ -1701,6 +1704,7 @@ function updateDbg() {
     `MODE=${MODE}   ` + units.map((u) => `${u.id.replace("_G5", "")}:${u.page}/${u.ui.mode}`).join("   "),
     `navsrc ${_dbgFmt(target.navsrc)}=${navInfo(target.navsrc).l}   cdiscale=${scale}   tofrom=${_dbgFmt(target.tofrom)}   vshow=${_dbgFmt(target.vshow)}`,
     `overrides: ${ov}`,
+    `viewport ${VW}x${VH}   unitH=${Math.round(VH / (units.length || 1))}px   win=${RW}x${RH}`,
   ];
   const cells = Object.keys(target).filter((k) => k !== "live")
     .map((k) => `${k}=${_dbgFmt(target[k])}`.padEnd(15));

@@ -192,7 +192,7 @@ def _demo_loop():
             "pitch": 7.0 * math.sin(t * 0.25),
             "roll": 22.0 * math.sin(t * 0.18),
             "ias": 105.0 + 12.0 * math.sin(t * 0.12),
-            "alt": 3000.0 + 350.0 * math.sin(t * 0.08),  # swings across ±200 band → exercises alt alerting
+            "alt": 3300.0 + 350.0 * math.sin(t * 0.08),  # ~3,300 ft; swings ±350 for alerting
             "vsi": 700.0 * math.cos(t * 0.08),
             "hdg": (t * 4.0) % 360.0,
             "slip": 1.5 * math.sin(t * 0.5),
@@ -200,7 +200,7 @@ def _demo_loop():
             "gs": 110.0 + 12.0 * math.sin(t * 0.12),
             "turn": 2.0 * math.sin(t * 0.18),
             "hdgbug": 130.0,       # fixed selected heading for the demo
-            "altsel": 3000.0,      # fixed selected altitude for the demo
+            "altsel": 3300.0,      # fixed selected altitude for the demo
             "trk": 50.0,
             "crs": 150.0,
             "cdi": 2.0 * math.sin(t * 0.13),                     # sweep the CDI needle
