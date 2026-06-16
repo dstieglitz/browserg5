@@ -392,7 +392,14 @@ def make_handler(xp: XPlaneClient, rate_hz: float):
             except OSError:
                 self.send_error(500, "g5.html missing")
                 return
-            self._send_headers("text/html; charset=utf-8", len(body))
+            # No caching: g5.html changes often and a stale cached copy silently
+            # masks updates (the browser keeps running old JS). Force a fresh GET
+            # every load. A server restart alone won't help if the browser caches.
+            self._send_headers("text/html; charset=utf-8", len(body), extra={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            })
             self.wfile.write(body)
 
         def _serve_events(self):
