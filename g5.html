@@ -180,7 +180,8 @@ let HDG_FS = STYLE.hdgFS;   // synced from STYLE each frame
 
 // developer mode: freeze + component→row hover highlighting
 let devFrozen = false, hitRegions = [], devPanelEl = null;
-let noData = false;   // true when the sim stream is stale → show red-X failures
+let noData = false;   // true when there's no data source → show red-X failures
+let everLive = false; // we've received live X-Plane data at least once this session
 
 // altitude alerting (spec §2.3.2): flash the selected-altitude box for 5 s when
 // passing within 1000 ft / 200 ft, and turn it yellow + flash when leaving the
@@ -312,7 +313,7 @@ function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor, valid = tru
     ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(bx, cy); ctx.lineTo(bx + w, cy); ctx.stroke();
     if (!valid) return;   // invalid deviation data -> scale only, no diamond
-    const dyc = cy - off;
+    const dyc = cy + off;   // X-Plane vdef: +above GS → diamond DOWN (fly down to it)
     ctx.fillStyle = diaColor; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(cx, dyc - dr); ctx.lineTo(cx + dr, dyc); ctx.lineTo(cx, dyc + dr); ctx.lineTo(cx - dr, dyc);
@@ -1169,6 +1170,20 @@ function batteryIndicator() {
   hit(x0, y0, boxW, boxH, ["battW", "battH", "battX", "battY"]);
 }
 
+// Boxed amber "PAUSED" annunciator under the aircraft symbol — shown while the
+// display is frozen (had live data, now stale: paused sim / lost connection).
+function pausedAnnunciator(g) {
+  if (!(everLive && !target.live)) return;
+  const { cx, cy } = g, fs = 14, padX = 9, padY = 4;
+  ctx.font = `700 ${fs}px ${FONT}`;
+  const w = ctx.measureText("PAUSED").width + padX * 2, h = fs + padY * 2;
+  const x = cx - w / 2, y = cy + STYLE.acDeltaH + 14;   // just under the symbol
+  ctx.fillStyle = "rgba(0,0,0,0.82)"; ctx.strokeStyle = "#ffb000"; ctx.lineWidth = 1.5;
+  rrect(x, y, w, h, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#ffb000"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("PAUSED", cx, y + h / 2 + 0.5);
+}
+
 function drawPFD() {
   const g = L();
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
@@ -1179,6 +1194,7 @@ function drawPFD() {
   headingTape(g);
   batteryIndicator();
   hdgWindow(g);
+  pausedAnnunciator(g);
 }
 
 // Baked design reference: a unit is laid out as if UI_REF_H px tall (the size the
@@ -1204,7 +1220,11 @@ function frame(now) {
   const dt = Math.min(0.1, (now - prevT)/1000); prevT = now;
   HDG_FS = STYLE.hdgFS;   // pick up live style edits
   hitRegions = [];
-  noData = (!target.live || (performance.now() - lastData > 2000));
+  if (target.live) everLive = true;
+  // FAIL only with no data source: never had live data (cold start / X-Plane off),
+  // or the SSE stream itself stalled (server down). A paused sim just stops sending
+  // fresh values — keep the last frame frozen instead of red-X.
+  noData = (!everLive || (performance.now() - lastData > 2000));
   if (!devFrozen) {   // dev mode freezes all motion so the display can be inspected
   disp.pitch = approach(disp.pitch, target.pitch, dt, 12);
   disp.roll  = approach(disp.roll,  target.roll,  dt, 12);
