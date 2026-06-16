@@ -55,7 +55,8 @@ DATAREFS: dict[str, str] = {
     # pilot-side selected course (OBS for VORs / localizer heading for ILS)
     "_crs_nav1": "sim/cockpit2/radios/actuators/nav1_course_deg_mag_pilot",
     "_crs_nav2": "sim/cockpit2/radios/actuators/nav2_course_deg_mag_pilot",
-    "_crs_gps":  "sim/cockpit/radios/gps_obs_degm",   # GPS DTK/desired track (what the HSI shows; gps_course_degtm is the VOR radial)
+    "_crs_gps":  "sim/cockpit/radios/gps_course_degtm",  # GPS desired track (DTK) while auto-sequencing the flight plan
+    "_obs_gps":  "sim/cockpit/radios/gps_obs_degm",       # GPS OBS course — only valid when OBS mode is active
     "_cdi_nav1": "sim/cockpit2/radios/indicators/nav1_hdef_dots_pilot",
     "_cdi_nav2": "sim/cockpit2/radios/indicators/nav2_hdef_dots_pilot",
     "_cdi_gps":  "sim/cockpit2/radios/indicators/gps_hdef_dots_pilot",
@@ -280,7 +281,10 @@ def snapshot(xp: XPlaneClient | None) -> dict:
         # the hsi_* composites are nav1-only, so pick per source (0/1=NAV, 2=GPS).
         src = round(data.get("navsrc", 0))
         if src >= 2:        # GPS
-            data["crs"], data["cdi"] = data["_crs_gps"], data["_cdi_gps"]
+            # course needle = OBS course in OBS mode, else the active-leg DTK.
+            obs_on = round(data.get("obs", 0)) > 0
+            data["crs"] = data["_obs_gps"] if obs_on else data["_crs_gps"]
+            data["cdi"] = data["_cdi_gps"]
             data["tofrom"] = 1.0 if data["_gps_dest"] > 0 else 0.0   # GPS leg = TO
             data["dist"] = data["_dme_gps"]
         elif src == 1:      # NAV2
