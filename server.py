@@ -49,8 +49,7 @@ DATAREFS: dict[str, str] = {
     # per-source `_*` datarefs below — the hsi_* composites are nav1-only.
     "trk":     "sim/cockpit2/gauges/indicators/ground_track_mag_pilot",
     "brg":     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag_pilot",
-    "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots
-    "vshow":   "sim/cockpit2/radios/indicators/hsi_flag_glideslope_pilot",  # 1 = vertical guidance valid
+    "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots (source-selected)
     # per-source variants — consumed and dropped in snapshot() (underscore keys)
     # pilot-side selected course (OBS for VORs / localizer heading for ILS)
     "_crs_nav1": "sim/cockpit2/radios/actuators/nav1_course_deg_mag_pilot",
@@ -65,6 +64,15 @@ DATAREFS: dict[str, str] = {
     "_dme_nav":  "sim/cockpit2/radios/indicators/hsi_dme_distance_nm_pilot",  # nav1 DME
     "_dme_gps":  "sim/cockpit/radios/gps_dme_dist_m",                         # GPS dist to wpt (nm)
     "_gps_dest": "sim/cockpit/gps/destination_type",                         # >0 = GPS has an active leg
+    # lateral-validity ("receiving a usable signal") + per-source glideslope flag,
+    # used to gate the CDI/VDI so we never show a centered needle on dead air.
+    "_rx_nav1":  "sim/cockpit2/radios/indicators/nav1_CDI",   # 1 = nav1 receiving a signal
+    "_rx_nav2":  "sim/cockpit2/radios/indicators/nav2_CDI",   # 1 = nav2 receiving a signal
+    "_gs_nav1":  "sim/cockpit2/radios/indicators/nav1_flag_glideslope_pilot",  # 1 = GS signal present
+    "_gs_nav2":  "sim/cockpit2/radios/indicators/nav2_flag_glideslope_pilot",
+    "_freq_nav1": "sim/cockpit/radios/nav1_freq_hz",  # 10 kHz units (11170 = 111.70); LOC band => "NO GS" capable
+    "_freq_nav2": "sim/cockpit/radios/nav2_freq_hz",
+    "_gs_gps":   "sim/cockpit/radios/gps_has_glideslope",  # 1 = GPS approach has vertical guidance (glidepath)
     # --- flight director command bars ---
     "fdpitch": "sim/cockpit2/autopilot/flight_director_pitch_deg",   # commanded pitch
     "fdroll":  "sim/cockpit2/autopilot/flight_director_roll_deg",    # commanded roll
@@ -80,6 +88,10 @@ DATAREFS: dict[str, str] = {
 
 _last_rx = 0.0
 _demo: dict | None = None
+# Set on Ctrl-C so the daemon worker/handler loops below stop touching shared
+# buffered streams before the interpreter finalizes (avoids the daemon-thread
+# "could not acquire lock for <_io.BufferedWriter>" abort on shutdown).
+_shutdown = threading.Event()
 
 # Keys the G5 knob may write back to X-Plane (their datarefs are in DATAREFS).
 WRITABLE = {"baro", "hdgbug", "altsel", "crs"}
@@ -177,8 +189,9 @@ def _resend_subscriptions(xp, subs, freq: int) -> None:
 def _resubscribe_loop(xp, subs, freq: int) -> None:
     """Watchdog: while no fresh data is arriving, keep (re)subscribing every 2 s
     so the server self-heals across start-order and X-Plane restarts."""
-    while True:
-        time.sleep(2.0)
+    while not _shutdown.is_set():
+        if _shutdown.wait(2.0):
+            break
         if time.monotonic() - _last_rx > 2.0:
             _resend_subscriptions(xp, subs, freq)
 
@@ -187,7 +200,7 @@ def _demo_loop():
     """Synthetic flight motion so the PFD can be tried without X-Plane."""
     global _demo, _last_rx
     t0 = time.monotonic()
-    while True:
+    while not _shutdown.is_set():
         t = time.monotonic() - t0
         _demo = {
             "pitch": 7.0 * math.sin(t * 0.25),
@@ -209,7 +222,9 @@ def _demo_loop():
             "dist": 1000.0,
             "brg": (120.0 + 45.0 * math.sin(t * 0.1)) % 360.0,   # sweep the bearing needle
             "vdef": 0.8 * math.sin(t * 0.15),   # synthetic glideslope deviation
-            "vshow": 1.0,
+            "vshow": 1.0 if (int(t / 14) % 5 != 1) else 0.0,   # hide diamond while NO GS shows
+            "cdivalid": 0.0 if (int(t / 14) % 5 == 0) else 1.0,  # exercise CDI-invalid (removed) state
+            "gsannun": "NO GS" if (int(t / 14) % 5 == 1) else "",  # exercise NO GS annunciation
             "fdpitch": 5.0 * math.sin(t * 0.22),
             "fdroll": 14.0 * math.sin(t * 0.16),
             "apmode": 2.0 if (int(t / 8) % 2 == 0) else 1.0,   # toggle AP (solid) / FD-only (hollow)
@@ -255,7 +270,7 @@ def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
           f"aircraft bridge={'on' if bridge else 'off'}.")
 
     led_byte = -1
-    while True:
+    while not _shutdown.is_set():
         report = device.read()
         if report:
             for ev in decoder.feed(report):
@@ -272,9 +287,20 @@ def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
         time.sleep(1.0 / 200.0)
 
 
+def _is_loc_freq(freq_hz: float) -> bool:
+    """True if a nav radio is tuned to an ILS/localizer frequency: 108.10–111.95
+    MHz with an odd first decimal digit. `freq_hz` is X-Plane's 10 kHz units
+    (11170 = 111.70). LOC-tuned + no glideslope => the G5 annunciates `NO GS`."""
+    mhz = freq_hz / 100.0
+    if not (108.10 <= mhz <= 111.95):
+        return False
+    return int(round(mhz * 10)) % 2 == 1
+
+
 def snapshot(xp: XPlaneClient | None) -> dict:
     if _demo is not None:
-        data = {k: round(v, 3) for k, v in _demo.items()}
+        data = {k: (round(v, 3) if isinstance(v, (int, float)) else v)
+                for k, v in _demo.items()}
     else:
         data = {key: round(xp.value(path), 3) for key, path in DATAREFS.items()}
         # Build the HSI course/CDI/to-from/distance for the SELECTED source —
@@ -285,14 +311,33 @@ def snapshot(xp: XPlaneClient | None) -> dict:
             obs_on = round(data.get("obs", 0)) > 0
             data["crs"] = data["_obs_gps"] if obs_on else data["_crs_gps"]
             data["cdi"] = data["_cdi_gps"]
-            data["tofrom"] = 1.0 if data["_gps_dest"] > 0 else 0.0   # GPS leg = TO
+            has_leg = data["_gps_dest"] > 0
+            data["tofrom"] = 1.0 if has_leg else 0.0   # GPS leg = TO
             data["dist"] = data["_dme_gps"]
+            # CDI valid while a leg is active; glidepath diamond when GPS reports
+            # vertical guidance. (NO GP needs approach-phase state X-Plane doesn't
+            # cleanly expose, so we only hide the diamond — no annunciation.)
+            data["cdivalid"] = 1.0 if has_leg else 0.0
+            data["vshow"] = 1.0 if data["_gs_gps"] > 0.5 else 0.0
+            data["gsannun"] = ""
         elif src == 1:      # NAV2
+            rx = data["_rx_nav2"] > 0.5
             data["crs"], data["cdi"] = data["_crs_nav2"], data["_cdi_nav2"]
-            data["tofrom"], data["dist"] = data["_tf_nav2"], data["_dme_nav"]
+            data["tofrom"] = data["_tf_nav2"] if rx else 0.0
+            data["dist"] = data["_dme_nav"]
+            data["cdivalid"] = 1.0 if rx else 0.0
+            gs = rx and data["_gs_nav2"] > 0.5
+            data["vshow"] = 1.0 if gs else 0.0
+            data["gsannun"] = "NO GS" if (_is_loc_freq(data["_freq_nav2"]) and not gs) else ""
         else:               # NAV1
+            rx = data["_rx_nav1"] > 0.5
             data["crs"], data["cdi"] = data["_crs_nav1"], data["_cdi_nav1"]
-            data["tofrom"], data["dist"] = data["_tf_nav1"], data["_dme_nav"]
+            data["tofrom"] = data["_tf_nav1"] if rx else 0.0
+            data["dist"] = data["_dme_nav"]
+            data["cdivalid"] = 1.0 if rx else 0.0
+            gs = rx and data["_gs_nav1"] > 0.5
+            data["vshow"] = 1.0 if gs else 0.0
+            data["gsannun"] = "NO GS" if (_is_loc_freq(data["_freq_nav1"]) and not gs) else ""
         for k in [k for k in data if k.startswith("_")]:
             data.pop(k)
     data["live"] = (time.monotonic() - _last_rx) < 1.0
@@ -371,7 +416,7 @@ def make_handler(xp: XPlaneClient, rate_hz: float):
                 "X-Accel-Buffering": "no",
             })
             try:
-                while True:
+                while not _shutdown.is_set():
                     payload = json.dumps(snapshot(xp))
                     self.wfile.write(f"data: {payload}\n\n".encode())
                     self.wfile.flush()
@@ -440,10 +485,18 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
-        httpd.shutdown()
+        _shutdown.set()          # let the daemon loops drop out of their writes
+        try:
+            httpd.shutdown()
+        except Exception:         # noqa: BLE001 — already torn down
+            pass
+        httpd.server_close()
         if xp is not None:
             xp.close()
-    return 0
+    # Daemon handler/worker threads may still be mid-write to a buffered stream;
+    # normal interpreter finalization can then abort with "could not acquire lock
+    # for <_io.BufferedWriter>". Our own cleanup is done, so exit hard to skip it.
+    os._exit(0)
 
 
 if __name__ == "__main__":

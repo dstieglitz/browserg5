@@ -42,7 +42,7 @@
 const FONT = "-apple-system, SF Pro Display, system-ui, Roboto, sans-serif";
 
 // ---- live state (target = from sim, disp = smoothed for display) ----------
-const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, fdpitch:0, fdroll:0, apmode:0, navsrc:2, cdiscale:0, msg:0, obs:0, gpss:0, batt:100, battchg:0, battshow:0, live:false };
+const target = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, cdivalid:1, tofrom:0, dist:0, brg:0, vdef:0, vshow:0, gsannun:"", fdpitch:0, fdroll:0, apmode:0, navsrc:2, cdiscale:0, msg:0, obs:0, gpss:0, batt:100, battchg:0, battshow:0, live:false };
 const disp   = { pitch:0, roll:0, ias:0, alt:0, vsi:0, hdg:0, slip:0, baro:29.92, gs:0, turn:0, hdgbug:0, altsel:0, trk:0, crs:0, cdi:0, tofrom:0, dist:0, brg:0, vdef:0, fdpitch:0, fdroll:0 };
 let lastData = 0;
 
@@ -289,7 +289,7 @@ function devHighlight(keys) {
 // Boxed deviation scale (CDI / glideslope / glidepath): rounded translucent-grey
 // box + grey border, a center reference line, larger HOLLOW dots at ±1/±2, and a
 // filled diamond. vertical=false → horizontal (lateral); true → vertical.
-function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor) {
+function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor, valid = true) {
   const bx = cx - w/2, by = cy - h/2;
   // inner elements respect the box: dots/diamond clamped to the cross dimension,
   // dot spacing derived from the scale-axis length so the scale fills the box.
@@ -311,6 +311,7 @@ function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor) {
     // glideslope: horizontal center reference (spans box width) + diamond moving vertically
     ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(bx, cy); ctx.lineTo(bx + w, cy); ctx.stroke();
+    if (!valid) return;   // invalid deviation data -> scale only, no diamond
     const dyc = cy - off;
     ctx.fillStyle = diaColor; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
     ctx.beginPath();
@@ -320,6 +321,7 @@ function devScale(cx, cy, w, h, vertical, dev, dotR, diaR, diaColor) {
     // localizer: fixed VERTICAL center reference line (spans box height) + diamond moving left/right
     ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by + h); ctx.stroke();
+    if (!valid) return;   // invalid deviation data -> scale only, no diamond
     const xx = cx + off;
     ctx.fillStyle = diaColor; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
     ctx.beginPath();
@@ -525,17 +527,35 @@ function turnRate(g) {
 // (spec §2.3.1, fig 2-21). Magenta diamond = GPS source.
 function pfdCDI(g) {
   const { cx, aBot, aH } = g, y = aBot - aH * 0.12 - 22;
-  devScale(cx, y, STYLE.cdiW, STYLE.cdiH, false, disp.cdi, STYLE.cdiDotR, STYLE.cdiDiaR, navInfo(target.navsrc).c);
+  devScale(cx, y, STYLE.cdiW, STYLE.cdiH, false, disp.cdi, STYLE.cdiDotR, STYLE.cdiDiaR,
+           navInfo(target.navsrc).c, target.cdivalid >= 0.5);
   hit(cx - STYLE.cdiW/2, y - STYLE.cdiH/2, STYLE.cdiW, STYLE.cdiH, ["cdiW", "cdiH", "cdiDotR", "cdiDiaR"]);
 }
 
 // Vertical deviation (glideslope/glidepath) diamond left of the altimeter
 // (spec §4.2, figs 2-23/2-25). Green = ILS; shown only when guidance is valid.
 function pfdVDI(g) {
-  if (target.vshow < 0.5) return;
   const xv = (W - g.altW - g.vsiW) - 14, midY = g.midY;
-  devScale(xv, midY, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, "#16c61a");
+  // No vertical guidance (incl. LOC tuned w/o GS) -> simply hide the indicator.
+  // vdiFlag() can annunciate NO GS/NO GP but we intentionally don't call it.
+  if (target.vshow < 0.5) return;
+  // glidepath = magenta (GPS), glideslope = green (ILS) — spec §4.2 / fig 2-23/2-25
+  const col = Math.round(target.navsrc) >= 2 ? MAG : GRN;
+  devScale(xv, midY, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, col);
   hit(xv - STYLE.vdiW/2, midY - STYLE.vdiH/2, STYLE.vdiW, STYLE.vdiH, ["vdiW", "vdiH", "vdiDotR", "vdiDiaR"]);
+}
+
+// NO GS / NO GP annunciation in place of the vertical scale (amber caution),
+// drawn rotated to fit the tall narrow VDI column.
+function vdiFlag(xv, cy, h, text) {
+  ctx.save();
+  ctx.translate(xv, cy); ctx.rotate(-Math.PI / 2);
+  ctx.font = `700 ${Math.round(STYLE.vdiW * 0.95)}px ${FONT}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const tw = ctx.measureText(text).width;
+  ctx.fillStyle = "rgba(0,0,0,0.65)"; rrect(-tw / 2 - 5, -STYLE.vdiW / 2, tw + 10, STYLE.vdiW, 3); ctx.fill();
+  ctx.fillStyle = "#FFD400"; ctx.fillText(text, 0, 0);
+  ctx.restore();
 }
 
 // slip/skid: a white ball between two vertical reference lines (|O|), below the
@@ -981,9 +1001,12 @@ function courseNeedle(cx, cy, R) {
   ctx.beginPath(); ctx.moveTo(0,-head-2); ctx.lineTo(-10,-head+16); ctx.lineTo(10,-head+16); ctx.closePath(); ctx.fill();
   // tail
   ctx.beginPath(); ctx.moveTo(0,gap); ctx.lineTo(0,tail); ctx.stroke();
-  // CDI deviation bar (center), offset by dots
-  const dev = clamp(disp.cdi, -2.5, 2.5) * (R*0.16);
-  ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(dev,-gap*0.86); ctx.lineTo(dev,gap*0.86); ctx.stroke();
+  // CDI deviation bar (center), offset by dots — removed when deviation data is
+  // invalid (no signal); the dots/scale stay so the card still reads as an HSI.
+  if (target.cdivalid >= 0.5) {
+    const dev = clamp(disp.cdi, -2.5, 2.5) * (R*0.16);
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(dev,-gap*0.86); ctx.lineTo(dev,gap*0.86); ctx.stroke();
+  }
   // deviation dots
   ctx.fillStyle = "#fff";
   for (const d of [-2,-1,1,2]) { ctx.beginPath(); ctx.arc(d*(R*0.16),0,2.6,0,7); ctx.fill(); }
@@ -1063,9 +1086,12 @@ function hsiAnnun(cx, cy, R) {
 
 // Vertical deviation diamond to the right of the rose (figs 2-24/2-26).
 function hsiVDI(cx, cy, R) {
-  if (target.vshow < 0.5) return;
   const xv = Math.min(cx + R + 4 + STYLE.vdiW/2, W - 6 - STYLE.vdiW/2);
-  devScale(xv, cy, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, "#16c61a");
+  // No vertical guidance (incl. LOC tuned w/o GS) -> simply hide the indicator.
+  // vdiFlag() can annunciate NO GS/NO GP but we intentionally don't call it.
+  if (target.vshow < 0.5) return;
+  const col = Math.round(target.navsrc) >= 2 ? MAG : GRN;   // GPS glidepath magenta / ILS glideslope green
+  devScale(xv, cy, STYLE.vdiW, STYLE.vdiH, true, disp.vdef, STYLE.vdiDotR, STYLE.vdiDiaR, col);
   hit(xv - STYLE.vdiW/2, cy - STYLE.vdiH/2, STYLE.vdiW, STYLE.vdiH, ["vdiW", "vdiH", "vdiDotR", "vdiDiaR"]);
 }
 
