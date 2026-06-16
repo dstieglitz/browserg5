@@ -78,6 +78,11 @@ function connect() {
   es.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
+      // `crs` is only pilot-settable for VLOC (Course knob) or GPS-OBS mode.
+      // While the GPS auto-sequences a flight plan the course IS the active-leg
+      // DTK from the navigator, so a stale crs override (left over from VLOC/OBS)
+      // must not freeze the needle — drop it and let the live DTK flow through.
+      if (override.crs && Math.round(d.navsrc ?? target.navsrc) >= 2 && !(d.obs ?? target.obs)) override.crs = false;
       for (const k in target) if (k in d && !override[k]) target[k] = d[k];
       dispatchBridgeInputs(d);   // controller inputs forwarded by the bridge
       lastData = performance.now();
