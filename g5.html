@@ -125,8 +125,8 @@ function rrect(x, y, w, h, r) {   // r ignored — square corners
 // font only if the text would overflow the given width.
 // ---- live-tunable style (developer mode: press D, or open with ?dev) ------
 const STYLE_DEFAULTS = {
-  asiBoxH: 24, asiBoxFS: 17, asiDrumExt: 12,   // airspeed readout: box height, digit size (units drum same size), drum-box extension
-  altBoxH: 25, altBoxFS: 17, altBoxFS2: 13, altDrumExt: 12,   // altitude readout: box height, big digits, drum digits, drum-box extension above/below
+  asiBoxH: 33, asiBoxFS: 24, asiDrumExt: 15,   // airspeed readout: box height, digit size (units drum same size), drum-box extension
+  altBoxH: 34, altBoxFS: 24, altBoxFS2: 18, altDrumExt: 15,   // altitude readout: box height, big digits, drum digits, drum-box extension above/below
   baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
   gsBoxH: 24, gsFS: 16, gsLabFS: 11,   // ground speed box (PFD): value font + "GS" label font
   altSelBugH: 28,              // selected-altitude tape bug height
@@ -323,14 +323,20 @@ function L() {
   const botH  = Math.round(clamp(H * 0.012, 5, 12));   // thin footer; GS/baro now boxed on the tapes
   const aTop = headH, aBot = H - botH;
   const aH = aBot - aTop;
+  const vsiW = 18;
+  // Center section spans just past the bank arc (and the aircraft level markers);
+  // the airspeed/altitude tapes fill the rest, symmetric about cx.
+  const arcReach = (aH * 0.40 + 13) * 0.866;                 // x-reach of the 60° roll tick (rollScale R=aH*0.40)
+  const markReach = STYLE.acMarkGap + STYLE.acMarkLen + 6;   // keep the level markers clear of the tapes
+  const centerHalf = Math.max(arcReach, markReach) + clamp(W * 0.01, 6, 14);
+  const spdW = clamp(Math.round(W / 2 - centerHalf), 54, Math.round(W * 0.34));
+  const altW = Math.max(54, Math.round((spdW - vsiW) * 1.15));  // alt tape 15% wider than the speed tape's mirror (5-digit readout)
   return {
     headH, botH, aTop, aBot, aH,
     cx: W / 2,
     cy: aTop + aH / 2,                  // = midY: aircraft symbol, readouts, VSI, glideslope all share the center line
     ppd: aH / 42,                       // pitch px/deg (~±21° visible)
-    spdW: clamp(W * 0.15, 50, 78),
-    altW: clamp(W * 0.18, 62, 92),
-    vsiW: 18,
+    spdW, altW, vsiW,
     pxKt: (aH / 2) / 45,                // ±45 kt
     pxFt: (aH / 2) / 320,               // ±320 ft
     midY: aTop + aH / 2,
@@ -602,9 +608,9 @@ function speedTape(g) {
   const gy = H - STYLE.gsBoxH, gh = STYLE.gsBoxH;
   ctx.fillStyle = "#000"; ctx.strokeStyle = "#e94fd0"; ctx.lineWidth = 2;
   rrect(x, gy, w, gh, 4); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#e94fd0"; ctx.textBaseline = "middle";
-  ctx.textAlign = "left";  ctx.font = `700 ${STYLE.gsLabFS}px ${FONT}`; ctx.fillText("GS", x + 5, gy + gh/2 + 1);
-  ctx.textAlign = "right"; ctx.font = `700 ${STYLE.gsFS}px ${FONT}`;    ctx.fillText(Math.round(disp.gs).toString(), x + w - 5, gy + gh/2 + 1);
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#9aa0a6"; ctx.textAlign = "left";  ctx.font = `700 ${STYLE.gsLabFS}px ${FONT}`; ctx.fillText("GS", x + 5, gy + gh/2 + 1);
+  ctx.fillStyle = "#e94fd0"; ctx.textAlign = "right"; ctx.font = `700 ${STYLE.gsFS}px ${FONT}`;    ctx.fillText(Math.round(disp.gs).toString(), x + w - 5, gy + gh/2 + 1);
   hit(x, gy, w, gh, ["gsBoxH", "gsFS", "gsLabFS"]);
 }
 
