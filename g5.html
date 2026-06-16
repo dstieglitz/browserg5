@@ -544,7 +544,7 @@ function slipBall(g) {
   const { cx, aBot, aH } = g;
   const y = aBot - aH * 0.045 - 18;
   const ballR = STYLE.slipR, lh = STYLE.slipLineH, gap = STYLE.slipGap;
-  const off = clamp(disp.slip * 7, -(gap + ballR + 4), gap + ballR + 4);
+  const off = clamp(disp.slip * -7, -(gap + ballR + 4), gap + ballR + 4);   // matches X-Plane/cockpit ball direction
   // vertical reference lines: white with a thin black border (black underlay)
   ctx.lineCap = "butt";
   const lines = () => { ctx.beginPath();
@@ -951,15 +951,11 @@ function drawHSI(unit) {
     ctx.fillStyle = CYAN; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
     bugPath(0, -R + hbh / 2, hbw, hbh, "up", 7, 6); ctx.fill(); ctx.stroke();
   });
-  // current ground track — magenta triangle at the rim + dashed radial line
-  // (spec §2.2.1 / fig 2-15)
+  // current ground track — white dashed radial line to the rim (no pointer)
   rosePointer(cx, cy, R, disp.trk - disp.hdg, () => {
-    ctx.setLineDash([5, 4]); ctx.strokeStyle = MAG; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(0, -R + 14); ctx.lineTo(0, 0); ctx.stroke();
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, -R + 2); ctx.lineTo(0, 0); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = MAG; ctx.beginPath();
-    ctx.moveTo(0, -R + 14); ctx.lineTo(-8, -R - 2); ctx.lineTo(8, -R - 2);
-    ctx.closePath(); ctx.fill();
   });
 
   courseNeedle(cx, cy, R);

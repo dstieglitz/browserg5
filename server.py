@@ -55,7 +55,7 @@ DATAREFS: dict[str, str] = {
     # pilot-side selected course (OBS for VORs / localizer heading for ILS)
     "_crs_nav1": "sim/cockpit2/radios/actuators/nav1_course_deg_mag_pilot",
     "_crs_nav2": "sim/cockpit2/radios/actuators/nav2_course_deg_mag_pilot",
-    "_crs_gps":  "sim/cockpit/radios/gps_course_degtm",
+    "_crs_gps":  "sim/cockpit/radios/gps_obs_degm",   # GPS DTK/desired track (what the HSI shows; gps_course_degtm is the VOR radial)
     "_cdi_nav1": "sim/cockpit2/radios/indicators/nav1_hdef_dots_pilot",
     "_cdi_nav2": "sim/cockpit2/radios/indicators/nav2_hdef_dots_pilot",
     "_cdi_gps":  "sim/cockpit2/radios/indicators/gps_hdef_dots_pilot",
@@ -116,7 +116,7 @@ def _write_dataref(key: str, xp) -> str | None:
     writing the course goes to the OBS setpoint of the SELECTED source instead."""
     if key == "crs":
         src = round(xp.value(DATAREFS["navsrc"]))
-        return ("sim/cockpit/radios/gps_course_degtm" if src >= 2
+        return ("sim/cockpit/radios/gps_obs_degm" if src >= 2   # GPS DTK/OBS course
                 else "sim/cockpit/radios/nav2_obs_degm" if src == 1
                 else "sim/cockpit/radios/nav1_obs_degm")
     return DATAREFS.get(key)
