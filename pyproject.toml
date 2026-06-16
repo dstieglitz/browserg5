@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browserg5"
+version = "0.1.0"
+description = "Browser-based Garmin G5 simulation, fed live from X-Plane (SSE), with optional Octavi IFR-1 input."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Dan Stieglitz" }]
+# ifrbridge isn't on PyPI — pull it straight from the repo. It carries hidapi.
+dependencies = [
+    "ifrbridge @ git+https://github.com/dstieglitz/ifrbridge",
+]
+
+[project.scripts]
+browserg5 = "server:main"
+
+[tool.setuptools]
+py-modules = ["server"]   # single-file app; g5.html is read relative to server.py
