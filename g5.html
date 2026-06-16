@@ -127,7 +127,7 @@ function rrect(x, y, w, h, r) {   // r ignored — square corners
 const STYLE_DEFAULTS = {
   asiBoxH: 33, asiBoxFS: 24, asiDrumExt: 15,   // airspeed readout: box height, digit size (units drum same size), drum-box extension
   altBoxH: 34, altBoxFS: 24, altBoxFS2: 18, altDrumExt: 15,   // altitude readout: box height, big digits, drum digits, drum-box extension above/below
-  baroBoxH: 25, baroFS: 18, baroBoxW: 99,   // barometric setting box (width adjustable)
+  baroBoxH: 25, baroFS: 18, baroBoxW: 111,   // barometric setting box (width adjustable)
   gsBoxH: 24, gsFS: 16, gsLabFS: 11,   // ground speed box (PFD): value font + "GS" label font
   altSelBugH: 28,              // selected-altitude tape bug height
   altTapeFS: 17, altTapeFS2: 14,   // altimeter tape numerals: thousands / hundreds (smaller)
@@ -136,6 +136,7 @@ const STYLE_DEFAULTS = {
   asiTapeFS: 17,               // airspeed tape numerals
   asiTapeTickMaj: 7,           // airspeed 10-kt tick length
   asiTapeTickMin: 4,           // airspeed 5-kt tick length
+  pitchLabFS: 16,              // PFD pitch-ladder degree labels (10/20/30) — climb/descent angle digits
   hdgFS: 15,           // PFD heading-box digits
   htBoxH: 22,          // PFD heading box height
   htBugWPct: 76,       // PFD heading bug width (% of box width)
@@ -330,7 +331,7 @@ function L() {
   const markReach = STYLE.acMarkGap + STYLE.acMarkLen + 6;   // keep the level markers clear of the tapes
   const centerHalf = Math.max(arcReach, markReach) + clamp(W * 0.01, 6, 14);
   const spdW = clamp(Math.round(W / 2 - centerHalf), 54, Math.round(W * 0.34));
-  const altW = Math.max(54, Math.round((spdW - vsiW) * 1.15));  // alt tape 15% wider than the speed tape's mirror (5-digit readout)
+  const altW = Math.max(54, Math.round((spdW - vsiW) * 1.15 + STYLE.altBoxFS * 0.62));  // 15% wider + one digit of room for 10k+ ft
   return {
     headH, botH, aTop, aBot, aH,
     cx: W / 2,
@@ -363,8 +364,9 @@ function attitude(g) {
 
   // pitch ladder
   ctx.strokeStyle = "#fff"; ctx.fillStyle = "#fff"; ctx.lineWidth = 2;
-  ctx.font = `600 ${Math.round(aH*0.022)}px ${FONT}`;
+  ctx.font = `600 ${STYLE.pitchLabFS}px ${FONT}`;     // dev-tunable degree-label size
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const plo = Math.round(STYLE.pitchLabFS * 0.95);    // gap from the tick, scales with the font
   for (let p = -90; p <= 90; p += 2.5) {
     if (p === 0) continue;
     const y = -p * ppd;
@@ -376,7 +378,7 @@ function attitude(g) {
     ctx.beginPath(); ctx.moveTo(-hw, y); ctx.lineTo(hw, y); ctx.stroke();
     if (p % 10 === 0) {
       const a = Math.abs(p);
-      ctx.fillText(a, -hw - 14, y); ctx.fillText(a, hw + 14, y);
+      ctx.fillText(a, -hw - plo, y); ctx.fillText(a, hw + plo, y);
     }
   }
   ctx.restore();
