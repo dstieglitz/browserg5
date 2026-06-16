@@ -49,7 +49,9 @@ DATAREFS: dict[str, str] = {
     # per-source `_*` datarefs below — the hsi_* composites are nav1-only.
     "trk":     "sim/cockpit2/gauges/indicators/ground_track_mag_pilot",
     "brg":     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag_pilot",
-    "vdef":    "sim/cockpit2/radios/indicators/hsi_vdef_dots_pilot",  # vertical (GS/GP) deviation, dots (source-selected)
+    # vertical (GS/GP) deviation + "valid" flag are picked per source in snapshot()
+    # from the _vdef_*/_gsrx_* datarefs below — these are what the real ILS gauge
+    # reads (the hsi_*_pilot composites sit pegged and don't reflect reception).
     # per-source variants — consumed and dropped in snapshot() (underscore keys)
     # pilot-side selected course (OBS for VORs / localizer heading for ILS)
     "_crs_nav1": "sim/cockpit2/radios/actuators/nav1_course_deg_mag_pilot",
@@ -64,15 +66,17 @@ DATAREFS: dict[str, str] = {
     "_dme_nav":  "sim/cockpit2/radios/indicators/hsi_dme_distance_nm_pilot",  # nav1 DME
     "_dme_gps":  "sim/cockpit/radios/gps_dme_dist_m",                         # GPS dist to wpt (nm)
     "_gps_dest": "sim/cockpit/gps/destination_type",                         # >0 = GPS has an active leg
-    # lateral-validity ("receiving a usable signal") + per-source glideslope flag,
-    # used to gate the CDI/VDI so we never show a centered needle on dead air.
-    "_rx_nav1":  "sim/cockpit2/radios/indicators/nav1_CDI",   # 1 = nav1 receiving a signal
-    "_rx_nav2":  "sim/cockpit2/radios/indicators/nav2_CDI",   # 1 = nav2 receiving a signal
-    "_gs_nav1":  "sim/cockpit2/radios/indicators/nav1_flag_glideslope_pilot",  # 1 = GS signal present
-    "_gs_nav2":  "sim/cockpit2/radios/indicators/nav2_flag_glideslope_pilot",
-    "_freq_nav1": "sim/cockpit/radios/nav1_freq_hz",  # 10 kHz units (11170 = 111.70); LOC band => "NO GS" capable
-    "_freq_nav2": "sim/cockpit/radios/nav2_freq_hz",
-    "_gs_gps":   "sim/cockpit/radios/gps_has_glideslope",  # 1 = GPS approach has vertical guidance (glidepath)
+    # Vertical guidance, per source. nav*_CDI is X-Plane's (confusingly named)
+    # "are we receiving an expected glide slope" boolean — the authoritative GS
+    # reception flag. nav*_vdef_dot is the deflection the real ILS gauge shows.
+    # Lateral "receiving" is read from the TO/FROM flag (_tf_*), which clears to 0
+    # when no station is received.
+    "_gsrx_nav1": "sim/cockpit/radios/nav1_CDI",       # 1 = glideslope being received
+    "_gsrx_nav2": "sim/cockpit/radios/nav2_CDI",
+    "_gs_gps":    "sim/cockpit/radios/gps_has_glideslope",  # 1 = GPS approach glidepath available
+    "_vdef_nav1": "sim/cockpit/radios/nav1_vdef_dot",  # GS deflection, dots (pilot)
+    "_vdef_nav2": "sim/cockpit/radios/nav2_vdef_dot",
+    "_vdef_gps":  "sim/cockpit/radios/gps_vdef_dot",   # GPS glidepath deflection, dots
     # --- flight director command bars ---
     "fdpitch": "sim/cockpit2/autopilot/flight_director_pitch_deg",   # commanded pitch
     "fdroll":  "sim/cockpit2/autopilot/flight_director_roll_deg",    # commanded roll
@@ -222,9 +226,8 @@ def _demo_loop():
             "dist": 1000.0,
             "brg": (120.0 + 45.0 * math.sin(t * 0.1)) % 360.0,   # sweep the bearing needle
             "vdef": 0.8 * math.sin(t * 0.15),   # synthetic glideslope deviation
-            "vshow": 1.0 if (int(t / 14) % 5 != 1) else 0.0,   # hide diamond while NO GS shows
+            "vshow": 1.0 if (int(t / 14) % 5 != 1) else 0.0,   # exercise no-vertical-guidance (diamond hidden)
             "cdivalid": 0.0 if (int(t / 14) % 5 == 0) else 1.0,  # exercise CDI-invalid (removed) state
-            "gsannun": "NO GS" if (int(t / 14) % 5 == 1) else "",  # exercise NO GS annunciation
             "fdpitch": 5.0 * math.sin(t * 0.22),
             "fdroll": 14.0 * math.sin(t * 0.16),
             "apmode": 2.0 if (int(t / 8) % 2 == 0) else 1.0,   # toggle AP (solid) / FD-only (hollow)
@@ -287,16 +290,6 @@ def _ifr1_loop(xp: "XPlaneClient | None", mcc_path: str | None, verbose: bool):
         time.sleep(1.0 / 200.0)
 
 
-def _is_loc_freq(freq_hz: float) -> bool:
-    """True if a nav radio is tuned to an ILS/localizer frequency: 108.10–111.95
-    MHz with an odd first decimal digit. `freq_hz` is X-Plane's 10 kHz units
-    (11170 = 111.70). LOC-tuned + no glideslope => the G5 annunciates `NO GS`."""
-    mhz = freq_hz / 100.0
-    if not (108.10 <= mhz <= 111.95):
-        return False
-    return int(round(mhz * 10)) % 2 == 1
-
-
 def snapshot(xp: XPlaneClient | None) -> dict:
     if _demo is not None:
         data = {k: (round(v, 3) if isinstance(v, (int, float)) else v)
@@ -314,30 +307,23 @@ def snapshot(xp: XPlaneClient | None) -> dict:
             has_leg = data["_gps_dest"] > 0
             data["tofrom"] = 1.0 if has_leg else 0.0   # GPS leg = TO
             data["dist"] = data["_dme_gps"]
-            # CDI valid while a leg is active; glidepath diamond when GPS reports
-            # vertical guidance. (NO GP needs approach-phase state X-Plane doesn't
-            # cleanly expose, so we only hide the diamond — no annunciation.)
             data["cdivalid"] = 1.0 if has_leg else 0.0
+            data["vdef"] = data["_vdef_gps"]
             data["vshow"] = 1.0 if data["_gs_gps"] > 0.5 else 0.0
-            data["gsannun"] = ""
         elif src == 1:      # NAV2
-            rx = data["_rx_nav2"] > 0.5
             data["crs"], data["cdi"] = data["_crs_nav2"], data["_cdi_nav2"]
-            data["tofrom"] = data["_tf_nav2"] if rx else 0.0
+            data["tofrom"] = data["_tf_nav2"]
             data["dist"] = data["_dme_nav"]
-            data["cdivalid"] = 1.0 if rx else 0.0
-            gs = rx and data["_gs_nav2"] > 0.5
-            data["vshow"] = 1.0 if gs else 0.0
-            data["gsannun"] = "NO GS" if (_is_loc_freq(data["_freq_nav2"]) and not gs) else ""
+            data["cdivalid"] = 1.0 if data["_tf_nav2"] > 0 else 0.0   # TO/FROM resolved => receiving
+            data["vdef"] = data["_vdef_nav2"]
+            data["vshow"] = 1.0 if data["_gsrx_nav2"] > 0.5 else 0.0  # GS actually received
         else:               # NAV1
-            rx = data["_rx_nav1"] > 0.5
             data["crs"], data["cdi"] = data["_crs_nav1"], data["_cdi_nav1"]
-            data["tofrom"] = data["_tf_nav1"] if rx else 0.0
+            data["tofrom"] = data["_tf_nav1"]
             data["dist"] = data["_dme_nav"]
-            data["cdivalid"] = 1.0 if rx else 0.0
-            gs = rx and data["_gs_nav1"] > 0.5
-            data["vshow"] = 1.0 if gs else 0.0
-            data["gsannun"] = "NO GS" if (_is_loc_freq(data["_freq_nav1"]) and not gs) else ""
+            data["cdivalid"] = 1.0 if data["_tf_nav1"] > 0 else 0.0
+            data["vdef"] = data["_vdef_nav1"]
+            data["vshow"] = 1.0 if data["_gsrx_nav1"] > 0.5 else 0.0
         for k in [k for k in data if k.startswith("_")]:
             data.pop(k)
     data["live"] = (time.monotonic() - _last_rx) < 1.0
